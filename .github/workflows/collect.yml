@@ -1,0 +1,131 @@
+# 공개 수집기 저장소(kestrel-collector)에 둘 워크플로. 이 비공개 저장소에서는 동작하지 않는다(.github 아래가 아님).
+#
+# 순서: 이전 data 브랜치에서 state 읽기 → collect → data 커밋(feed SHA 확정) → FCM 푸시 → 못 보낸 알림 되돌리기(requeue)
+# → state·push-status를 더한 커밋으로 data 갱신
+# data 브랜치는 기록을 쌓지 않는다. 매번 커밋 하나(필요하면 둘)를 새로 만들어 강제로 덮어쓴다.
+# state.json(약 0.5MB)을 5분마다 커밋하면 저장소가 계속 커지기 때문이다.
+#
+# 공개 저장소이므로 트리거는 schedule과 workflow_dispatch만 둔다(pull_request_target 금지).
+# 액션은 태그가 아니라 커밋 SHA로 고정한다(태그는 바꿔치기될 수 있음). 2026-10-26에 git ls-remote로 확인한 값이다.
+# 체크아웃 자격 증명은 남기지 않고, data 브랜치 푸시 때만 GITHUB_TOKEN을 환경 변수로 넘긴다.
+# ${{ }} 값은 셸에 직접 넣지 않고 환경 변수로 넘긴다(템플릿 주입 방지).
+name: collect
+
+on:
+  schedule:
+    - cron: "3-58/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      test_push:
+        description: "설치 확인용 시험 알림(🔴)을 보낸다"
+        type: boolean
+        default: false
+
+# 워크플로 기본 권한은 없음. 필요한 권한은 작업 단위로만 준다.
+permissions: {}
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: collect and push
+    runs-on: ubuntu-latest
+    # 비밀 값은 저장소 전체가 아니라 이 환경(Settings > Environments > collector)에만 둔다
+    environment: collector
+    permissions:
+      contents: write # data 브랜치에 state·feed를 커밋하기 위해 필요
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      - name: Load previous state
+        run: |
+          mkdir -p state public out
+          repo="https://github.com/${GITHUB_REPOSITORY}.git"
+          # data 브랜치가 정말 없을 때(종료 코드 2)만 첫 실행으로 본다.
+          # 확인 자체가 실패하면(네트워크·GitHub 오류) 멈춘다. 빈 state로 진짜 state를 덮어쓰지 않기 위해서다
+          rc=0
+          git ls-remote --exit-code --heads "$repo" data > /dev/null || rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "data 브랜치 없음: 첫 실행(알림 없이 기록만)"
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::data 브랜치 확인 실패(종료 코드 $rc). state를 지키기 위해 이번 실행을 멈춘다"
+            exit 1
+          else
+            git fetch -q --depth=1 "$repo" data
+            # 임시 파일에 받은 뒤 옮긴다(실패하면 빈 state 파일이 남지 않게)
+            git show FETCH_HEAD:state/state.json > "$RUNNER_TEMP/state.json"
+            mv "$RUNNER_TEMP/state.json" state/state.json
+            echo "previous data commit: $(git rev-parse FETCH_HEAD)"
+          fi
+
+      - name: Collect
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: ./gradlew --no-daemon -q :collector:run --args="collect --state state/state.json --feed public/feed.json --alerts out/new-alerts.json --advisory config/app-advisory.json"
+
+      - name: Commit data
+        id: data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "kestrel-collector"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_INDEX_FILE="$RUNNER_TEMP/data-index"
+          git add -f state/state.json public/feed.json
+          tree=$(git write-tree)
+          sha=$(git commit-tree "$tree" -m "data $(date -u +%FT%TZ)")
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$sha:refs/heads/data"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Push alerts
+        id: push
+        env:
+          FCM_SERVICE_ACCOUNT: ${{ secrets.FCM_SERVICE_ACCOUNT }}
+          FCM_FIDS: ${{ secrets.FCM_FIDS }}
+          FCM_TOKENS: ${{ secrets.FCM_TOKENS }}
+          FCM_MODE: ${{ vars.FCM_MODE }}
+          FEED_SHA: ${{ steps.data.outputs.sha }}
+        run: ./gradlew --no-daemon -q :collector:run --args="push --alerts out/new-alerts.json --feed-sha ${FEED_SHA} --status public/push-status.json"
+
+      # 일시적으로 못 보낸 알림은 state의 "알린 것"에서 빼 다음 실행이 다시 보내게 한다
+      - name: Requeue failed pushes
+        if: ${{ !cancelled() && steps.data.outputs.sha != '' }}
+        run: ./gradlew --no-daemon -q :collector:run --args="requeue --state state/state.json --alerts out/new-alerts.json --status public/push-status.json"
+
+      # 실제 푸시가 실패한 때야말로 시험이 필요하므로, 앞 단계 결과와 관계없이 돈다
+      - name: Test push
+        if: ${{ !cancelled() && inputs.test_push }}
+        env:
+          FCM_SERVICE_ACCOUNT: ${{ secrets.FCM_SERVICE_ACCOUNT }}
+          FCM_FIDS: ${{ secrets.FCM_FIDS }}
+          FCM_TOKENS: ${{ secrets.FCM_TOKENS }}
+          FCM_MODE: ${{ vars.FCM_MODE }}
+        run: ./gradlew --no-daemon -q :collector:run --args="test-push --status out/test-push.json"
+
+      - name: Record push status and requeue
+        if: ${{ !cancelled() && steps.data.outputs.sha != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FEED_SHA: ${{ steps.data.outputs.sha }}
+        run: |
+          export GIT_INDEX_FILE="$RUNNER_TEMP/data-index"
+          # requeue로 바뀐 state와 푸시 결과를 함께 남긴다
+          git add -f state/state.json
+          if [ -f public/push-status.json ]; then git add -f public/push-status.json; fi
+          if git diff --cached --quiet "$FEED_SHA"; then echo "바뀐 것 없음"; exit 0; fi
+          tree=$(git write-tree)
+          # 앞 커밋(feed SHA)을 부모로 두어, 앱이 그 SHA로 feed를 받을 수 있게 다음 실행까지 남긴다
+          sha=$(git commit-tree "$tree" -p "$FEED_SHA" -m "push status $(date -u +%FT%TZ)")
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$sha:refs/heads/data"

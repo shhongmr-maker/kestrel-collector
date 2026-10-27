@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+# 대용량 원본(재수집 가능)
+research/**/nvd30.json
+# Gradle
+.gradle/
+build/
+.kotlin/
+.security-tools/
+local.properties
+*.hprof
