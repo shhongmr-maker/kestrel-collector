@@ -74,6 +74,7 @@ object Json {
                 }
             }
             fo("bodyFailures") { for ((url, n) in st.bodyFailures.toSortedMap()) f(url, n) }
+            fo("followups") { for ((key, at) in st.followups.toSortedMap()) f(key, at) }
         }
     }.s.toString()
 
@@ -139,6 +140,7 @@ object Json {
         fa("evidence") { for (s in e.evidence) obj { f("date", s.date); f("kind", s.kind.code); f("detail", s.detail) } }
         f("title", e.title)
         f("headline", e.headline)
+        if (e.ref.isNotEmpty()) f("ref", e.ref)
     }
 
     // ---- 읽기 ----
@@ -150,7 +152,7 @@ object Json {
             signals = o.getJSONArray("signals").let { a -> (0 until a.length()).map { a.getString(it) } },
             trigger = o.optString("trigger", ""), firstSeen = Instant.parse(o.getString("firstSeen")),
             evidence = o.getJSONArray("evidence").objects().map { Signal(it.date("date"), o.getString("clusterKey"), SignalKind.fromCode(it.getString("kind")), it.getString("detail")) },
-            title = o.optString("title", ""), headline = o.optString("headline", ""),
+            title = o.optString("title", ""), headline = o.optString("headline", ""), ref = o.optString("ref", ""),
         )
     }
 
@@ -220,6 +222,7 @@ object Json {
                 )
             } ?: emptyList(),
             bodyFailures = o.optJSONObject("bodyFailures")?.let { b -> b.keySet().sorted().associateWith { b.getInt(it) } } ?: emptyMap(),
+            followups = o.optJSONObject("followups")?.let { b -> b.keySet().sorted().associateWith { Instant.parse(b.getString(it)) } } ?: emptyMap(),
         )
     }
 

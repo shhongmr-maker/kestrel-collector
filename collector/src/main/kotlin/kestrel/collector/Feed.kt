@@ -70,8 +70,15 @@ data class FeedEvent(
     val title: String = "",
     /** 대표 원문 제목(KISA 공지나 기사). */
     val headline: String = "",
+    /** 추가 보도 알림([isFollowUp])이면 처음 알린 이벤트의 id. 앱은 이것으로 상세를 연다 */
+    val ref: String = "",
 ) {
+    /** 이미 알린 취약점의 추가 보도(무음 알림). 판정 이벤트가 아니며 feed에는 싣지 않는다 */
+    val isFollowUp: Boolean get() = trigger == FOLLOWUP
+
     companion object {
+        const val FOLLOWUP = "FOLLOWUP"
+
         fun of(e: AlertEvent, firstSeen: Instant, evidence: List<Signal>, titles: Pair<String, String> = "" to "") =
             FeedEvent(
                 listOf(e.date, e.clusterKey, e.level, e.trigger).filter { it.toString().isNotEmpty() }.joinToString("|"),

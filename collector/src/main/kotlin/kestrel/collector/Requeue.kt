@@ -30,7 +30,8 @@ object Requeue {
             val mine = results.filter { it.eventId == a.id }
             val delivered = mine.any { it.ok }
             val permanent = mine.isNotEmpty() && mine.all { !it.ok && PERMANENT.containsMatchIn(it.detail) }
-            !delivered && !permanent && a.date >= today.minusDays(maxAgeDays)
+            // 추가 보도는 소식 알림이라 다시 보내지 않는다(다음 기사가 오면 그때 새로 알린다)
+            !a.isFollowUp && !delivered && !permanent && a.date >= today.minusDays(maxAgeDays)
         }
         if (retry.isEmpty()) return Outcome(state, emptyList())
         val keep = state.notified.filterNot { n ->

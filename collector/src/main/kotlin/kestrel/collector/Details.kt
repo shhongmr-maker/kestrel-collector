@@ -79,6 +79,12 @@ class DetailBuilder(
         const val MAX_RANGES = 30
         const val MAX_BRIEFS = 80
         const val MAX_INCIDENTS = 30
+        /**
+         * 공개 feed에 싣는 원문 길이. 기사는 요약 한두 문장(저작권: 공개 저장소에 본문을 옮기지 않는다), 보호나라 공지는 조치 안내 앞부분.
+         * 전체 원문은 "원문 보기"와 AI의 원문 링크 열람(web_fetch)으로 본다. NVD·KEV(미국 정부 자료)는 그대로 둔다
+         */
+        const val NEWS_EXCERPT = 200
+        const val KISA_EXCERPT = 1000
         private val CVE = Regex("""CVE-\d{4}-\d{4,7}""")
         private val KST = ZoneOffset.ofHours(9)
         private val INCIDENT_KINDS = setOf(SignalKind.S7, SignalKind.S7K, SignalKind.S7K_MAJOR)
@@ -136,6 +142,19 @@ class DetailBuilder(
     }
 
     /** 클러스터 상세. [evidence]는 그 클러스터의 모든 이벤트 근거를 합친 것이다. */
+    /** 클러스터에 붙는 기사([from] 날짜 이후, 오래된 것부터): 제품군은 제목의 제품, CVE는 제목·본문의 번호, 침해사고는 회사 이름으로 맞춘다 */
+    fun newsOf(key: String, from: LocalDate): List<Seen<Article>> {
+        val group = key.takeIf { it in ProductCatalog.names }
+        return news.filter { a ->
+            day(a.value.publishedAt) >= from && when {
+                group != null -> ProductCatalog.groupOfText(a.value.title) == group
+                CVE.matches(key) -> key in a.value.title || key in a.value.text
+                key.startsWith("INC:") -> key.removePrefix("INC:").let { k -> k in Incidents.tokens(a.value.title) || Incidents.koreanIncident(a.value.title) == k }
+                else -> false
+            }
+        }.sortedBy { it.value.publishedAt }
+    }
+
     fun detail(key: String, firstDate: LocalDate, evidence: List<Signal>): ClusterDetail {
         val from = firstDate.minusDays(7)
         val group = key.takeIf { it in ProductCatalog.names }
@@ -151,14 +170,7 @@ class DetailBuilder(
                     (CVE.matches(key) && key in p.value.body)
                 )
         }
-        val newsHits = news.filter { a ->
-            day(a.value.publishedAt) >= from && when {
-                group != null -> ProductCatalog.groupOfText(a.value.title) == group
-                CVE.matches(key) -> key in a.value.title || key in a.value.text
-                key.startsWith("INC:") -> key.removePrefix("INC:").let { k -> k in Incidents.tokens(a.value.title) || Incidents.koreanIncident(a.value.title) == k }
-                else -> false
-            }
-        }.sortedBy { it.value.publishedAt }
+        val newsHits = newsOf(key, from)
 
         // CVE: 근거 신호 → KEV → KISA 본문 → 기사 순서로 모은다
         val cves = LinkedHashSet<String>()
@@ -182,7 +194,7 @@ class DetailBuilder(
 
         val docs = mutableListOf<SourceDoc>()
         kisaHits.sortedByDescending { it.value.date }.forEach { p ->
-            docs += SourceDoc("kisa:${p.value.date}:${docs.size}", "kisa", p.value.title, p.url, start(p.value.date), p.value.body.ifEmpty { p.value.title }.clip(3000))
+            docs += SourceDoc("kisa:${p.value.date}:${docs.size}", "kisa", p.value.title, p.url, start(p.value.date), p.value.body.ifEmpty { p.value.title }.clip(KISA_EXCERPT))
         }
         kevHits.forEach { k ->
             val text = listOf(k.shortDescription, "필수 조치: ${k.requiredAction}".takeIf { k.requiredAction.isNotEmpty() },
@@ -199,7 +211,7 @@ class DetailBuilder(
                 listOf(v.description, rangeText, refs).filter { it.isNotEmpty() }.joinToString("\n").clip(1800))
         }
         newsHits.takeLast(5).reversed().forEach { a ->
-            docs += SourceDoc("news:${docs.size}", "news", "[${a.value.source}] ${a.value.title}", a.url, a.value.publishedAt, a.value.text.ifEmpty { a.value.title }.clip(700))
+            docs += SourceDoc("news:${docs.size}", "news", "[${a.value.source}] ${a.value.title}", a.url, a.value.publishedAt, a.value.text.ifEmpty { a.value.title }.clip(NEWS_EXCERPT))
         }
 
         val category = when {
@@ -253,7 +265,7 @@ class DetailBuilder(
         level = level,
         firstReported = g.first().value.publishedAt,
         articles = g.takeLast(5).mapIndexed { i, a ->
-            SourceDoc("inc:$i", "news", "[${a.value.source}] ${a.value.title}", a.url, a.value.publishedAt, a.value.text.ifEmpty { a.value.title }.clip(700))
+            SourceDoc("inc:$i", "news", "[${a.value.source}] ${a.value.title}", a.url, a.value.publishedAt, a.value.text.ifEmpty { a.value.title }.clip(NEWS_EXCERPT))
         },
     )
 

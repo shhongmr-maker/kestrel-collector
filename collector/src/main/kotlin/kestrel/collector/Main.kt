@@ -39,13 +39,18 @@ private fun collect(opts: Map<String, String>) {
     val feedFile = File(opts["--feed"] ?: usage())
     val alertsFile = opts["--alerts"]?.let(::File)
 
-    val prev = if (stateFile.exists()) Json.readState(stateFile.readText()) else CollectorState()
+    val key = DataKey.fromEnv()
+    val prev = if (stateFile.exists()) Json.readState(DataKey.readState(stateFile.readText(), key)) else CollectorState()
     val collector = Collector(Sources(JdkFetcher(USER_AGENT), System.getenv("NVD_API_KEY")?.takeIf { it.isNotBlank() }))
     val advisory = opts["--advisory"]?.let(::File)?.takeIf { it.exists() }?.let { AppAdvisory.parse(it.readText()) }
     val result = collector.run(prev, Instant.now()).let { it.copy(feed = it.feed.copy(appAdvisory = advisory)) }
 
-    stateFile.parentFile?.mkdirs(); stateFile.writeText(Json.writeState(result.state) + "\n")
-    feedFile.parentFile?.mkdirs(); feedFile.writeText(Json.writeFeed(result.feed) + "\n")
+    stateFile.parentFile?.mkdirs(); stateFile.writeText(DataKey.writeState(Json.writeState(result.state) + "\n", key))
+    val feedBytes = (Json.writeFeed(result.feed) + "\n").toByteArray()
+    feedFile.parentFile?.mkdirs(); feedFile.writeBytes(feedBytes)
+    // 앱은 이 서명이 있는 feed만 믿는다(공개 키는 앱에 고정). 키가 없으면 서명하지 않는다
+    key?.let { File(feedFile.path + ".sig").writeText(it.sign(feedBytes) + "\n") }
+    println(if (key != null) "feed 서명·state 암호화: 켬" else "feed 서명·state 암호화: 끔(${DataKey.ENV} 없음)")
     alertsFile?.let { it.parentFile?.mkdirs(); it.writeText(Json.writeEvents(result.newAlerts) + "\n") }
 
     for (s in result.feed.sources) {
@@ -63,8 +68,9 @@ private fun requeue(opts: Map<String, String>) {
     val alerts = Json.readEvents(alertsFile.readText())
     if (alerts.isEmpty()) return println("requeue: 새 알림 없음")
     val (results, error) = if (statusFile.exists()) Json.readPushStatus(statusFile.readText()) else emptyList<FcmSender.Result>() to "push-status 없음"
-    val out = Requeue.apply(Json.readState(stateFile.readText()), alerts, results, error, java.time.LocalDate.now(java.time.ZoneOffset.UTC))
-    stateFile.writeText(Json.writeState(out.state) + "\n")
+    val key = DataKey.fromEnv()
+    val out = Requeue.apply(Json.readState(DataKey.readState(stateFile.readText(), key)), alerts, results, error, java.time.LocalDate.now(java.time.ZoneOffset.UTC))
+    stateFile.writeText(DataKey.writeState(Json.writeState(out.state) + "\n", key))
     println(if (out.requeued.isEmpty()) "requeue: 다시 보낼 알림 없음" else "requeue: 다음 실행에서 다시 보냄 ${out.requeued}")
 }
 

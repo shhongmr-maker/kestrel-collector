@@ -32,6 +32,12 @@ class Collector(
     companion object {
         /** 보호나라 본문을 이만큼 실패하면 그 공지는 더 받지 않는다(형식이 바뀐 페이지를 매번 다시 요청하지 않게). */
         const val KISA_BODY_TRIES = 3
+        /** 같은 취약점의 추가 보도 알림은 이 간격에 한 번까지 보낸다 */
+        val FOLLOWUP_GAP: Duration = Duration.ofHours(6)
+        /** 이보다 오래된 기사는 추가 보도로 알리지 않는다(소스가 되살아나 옛 기사가 한꺼번에 들어올 때) */
+        val FOLLOWUP_MAX_AGE: Duration = Duration.ofHours(48)
+        /** 한 실행에서 보내는 추가 보도 알림 수 상한 */
+        const val MAX_FOLLOWUPS = 5
     }
 
     fun run(prev: CollectorState, now: Instant): RunResult {
@@ -139,6 +145,7 @@ class Collector(
         val toPush = fresh.filterNot { it.level == Level.ORANGE && it.clusterKey in redNow }
         val live = prev.initialized && prev.rulesVersion == Rules.VERSION
         val newAlerts = if (live) toPush.map { e -> evidence(e, signals).let { ev -> FeedEvent.of(e, now, ev, details.titles(e, ev)) } } else emptyList()
+        val followups = if (live) followUps(prev, toPush.map { it.clusterKey }.toSet(), details, feedEvents, today, now) else emptyList()
 
         val state = CollectorState(
             initialized = true,
@@ -146,6 +153,8 @@ class Collector(
             sources = statuses.toSortedMap(),
             kev = kev, nvd = nvd, kisa = kisa, news = news, notified = notified,
             bodyFailures = failures.toSortedMap(),
+            followups = (prev.followups + followups.associate { it.clusterKey to now })
+                .filterValues { Duration.between(it, now) <= Duration.ofDays(feedDays + 1) }.toSortedMap(),
         )
         val clusters = (feedRaw + newAlertsRaw(live, toPush)).groupBy { it.clusterKey }.mapValues { (key, es) ->
             details.detail(key, es.minOf { it.date }, es.flatMap { evidence(it, signals) }.distinct())
@@ -162,8 +171,41 @@ class Collector(
             notices = details.notices(today.minusDays(feedDays)),
             briefs = details.briefs(today.minusDays(feedDays)),
         )
-        return RunResult(state, feed, newAlerts)
+        return RunResult(state, feed, newAlerts + followups)
     }
+
+    /**
+     * 이미 알린 취약점의 추가 보도: 알린 뒤(또는 마지막 추가 보도 알림 뒤) 처음 본 기사가 있으면 무음으로 한 번 알린다.
+     * - 제품군·CVE 클러스터만(침해사고·KISA 공지는 제외), feed 기간 안에 알린 것만
+     * - 이번 실행에 새 등급 알림이 나간 클러스터는 그 알림으로 충분하므로 건너뛴다
+     * - 클러스터마다 [FOLLOWUP_GAP]에 한 번, 한 실행에 [MAX_FOLLOWUPS]건까지. 그 사이 기사는 다음 알림에 묶인다
+     */
+    private fun followUps(
+        prev: CollectorState, pushedNow: Set<String>, details: DetailBuilder, feedEvents: List<FeedEvent>,
+        today: java.time.LocalDate, now: Instant,
+    ): List<FeedEvent> = prev.notified
+        .filter { it.date >= today.minusDays(feedDays) && !it.clusterKey.startsWith("INC:") && !it.clusterKey.startsWith("KISA:") && it.clusterKey !in pushedNow }
+        .groupBy { it.clusterKey }
+        .mapNotNull { (key, ns) ->
+            val last = prev.followups[key]
+            if (last != null && Duration.between(last, now) < FOLLOWUP_GAP) return@mapNotNull null
+            val latest = ns.maxWith(compareBy<Notified>({ it.date }, { it.level }, { it.firstSeen }))
+            val since = listOfNotNull(ns.maxOf { it.firstSeen }, last).max()
+            val articles = details.newsOf(key, latest.date.minusDays(7))
+                .filter { it.firstSeen > since && Duration.between(it.value.publishedAt, now) <= FOLLOWUP_MAX_AGE }
+            if (articles.isEmpty()) return@mapNotNull null
+            val ref = listOf(latest.date, latest.clusterKey, latest.level, latest.trigger).filter { it.toString().isNotEmpty() }.joinToString("|")
+            val title = feedEvents.firstOrNull { it.id == ref }?.title?.ifEmpty { null } ?: feedEvents.firstOrNull { it.clusterKey == key }?.title?.ifEmpty { null } ?: key
+            val a = articles.last()
+            FeedEvent(
+                id = "FU|$ref|${now.epochSecond}", date = today, clusterKey = key, level = Level.ORANGE, signals = emptyList(),
+                trigger = FeedEvent.FOLLOWUP, firstSeen = now, evidence = emptyList(), title = title,
+                headline = "[${a.value.source}] ${a.value.title}" + if (articles.size > 1) " 외 ${articles.size - 1}건" else "",
+                ref = ref,
+            )
+        }
+        .sortedByDescending { it.ref.contains("|RED") }
+        .take(MAX_FOLLOWUPS)
 
     private fun newAlertsRaw(live: Boolean, toPush: List<AlertEvent>) = if (live) toPush else emptyList()
 

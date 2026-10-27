@@ -39,4 +39,6 @@ data class CollectorState(
     val notified: List<Notified> = emptyList(),
     /** 보호나라 본문 받기 실패 횟수(링크별). [Collector.KISA_BODY_TRIES]번 실패하면 더 받지 않는다. */
     val bodyFailures: Map<String, Int> = emptyMap(),
+    /** 추가 보도 알림을 마지막으로 보낸 시각(클러스터별). [Collector.FOLLOWUP_GAP]보다 자주 보내지 않는다 */
+    val followups: Map<String, Instant> = emptyMap(),
 )

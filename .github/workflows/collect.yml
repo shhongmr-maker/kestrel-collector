@@ -73,6 +73,8 @@ jobs:
       - name: Collect
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+          # feed 서명·state 암호화 키(없으면 둘 다 하지 않음). 앱은 서명된 feed를 한 번 받은 뒤부터 서명 없는 feed를 거부한다
+          KESTREL_DATA_KEY: ${{ secrets.KESTREL_DATA_KEY }}
         run: ./gradlew --no-daemon -q :collector:run --args="collect --state state/state.json --feed public/feed.json --alerts out/new-alerts.json --advisory config/app-advisory.json"
 
       - name: Commit data
@@ -84,6 +86,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           export GIT_INDEX_FILE="$RUNNER_TEMP/data-index"
           git add -f state/state.json public/feed.json
+          if [ -f public/feed.json.sig ]; then git add -f public/feed.json.sig; fi
           tree=$(git write-tree)
           sha=$(git commit-tree "$tree" -m "data $(date -u +%FT%TZ)")
           git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$sha:refs/heads/data"
@@ -102,6 +105,8 @@ jobs:
       # 일시적으로 못 보낸 알림은 state의 "알린 것"에서 빼 다음 실행이 다시 보내게 한다
       - name: Requeue failed pushes
         if: ${{ !cancelled() && steps.data.outputs.sha != '' }}
+        env:
+          KESTREL_DATA_KEY: ${{ secrets.KESTREL_DATA_KEY }}
         run: ./gradlew --no-daemon -q :collector:run --args="requeue --state state/state.json --alerts out/new-alerts.json --status public/push-status.json"
 
       # 실제 푸시가 실패한 때야말로 시험이 필요하므로, 앞 단계 결과와 관계없이 돈다

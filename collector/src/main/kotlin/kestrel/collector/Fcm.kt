@@ -76,7 +76,7 @@ class FcmSender(
             }
 
         fun title(e: FeedEvent): String =
-            "${levelLabel(e.level)} · " + e.title.ifEmpty { e.clusterKey + if (e.trigger.isNotEmpty()) " (${e.trigger})" else "" }.let {
+            (if (e.isFollowUp) "추가 보도 · " else "${levelLabel(e.level)} · ") + e.title.ifEmpty { e.clusterKey + if (e.trigger.isNotEmpty()) " (${e.trigger})" else "" }.let {
                 if (it.codePointCount(0, it.length) > 80) it.takeCodePoints(79) + "…" else it
             }
     }
@@ -113,6 +113,8 @@ class FcmSender(
             "id" to e.id, "level" to e.level.name, "cluster" to e.clusterKey, "date" to e.date.toString(),
             "trigger" to e.trigger, "title" to title(e), "body" to body(e), "feedSha" to feedSha,
         )
+        // 추가 보도: 앱이 무음으로 띄우고, 누르면 처음 알린 이벤트(ref)의 상세를 연다
+        if (e.isFollowUp) { data["kind"] = "followup"; data["ref"] = e.ref }
         val w = JSONStringer().`object`().key("message").`object`().key(if (target.fid) "fid" else "token").value(target.value)
         w.key("data").`object`(); data.forEach { (k, v) -> w.key(k).value(v) }; w.endObject()
         when (mode) {
