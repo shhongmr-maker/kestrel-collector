@@ -102,6 +102,25 @@ class DetailBuilder(
 
         fun display(group: String): String = DISPLAY[group] ?: group
 
+        private val PRODUCT_SPLIT = Regex("""\s+(and|&)\s+|\s*[,;/(]\s*""")
+
+        /**
+         * KEV 제품 이름 중 제목에 붙일 부분: 첫 제품만("A and B" → A), 제품군 표시 이름에 이미 있는 낱말은 빼고,
+         * 40자가 넘으면 낱말 단위로 줄인다. 예: "Citrix NetScaler" + "NetScaler ADC" → "ADC"
+         */
+        fun productSuffix(base: String, key: String, product: String): String {
+            val have = base.lowercase().split(' ').toSet() + key.lowercase()
+            val first = product.split(PRODUCT_SPLIT).first().trim()
+            val words = first.split(Regex("\\s+")).filter { it.isNotBlank() && it.lowercase() !in have }
+            val out = StringBuilder()
+            for (w in words) {
+                if (out.length + w.length + 1 > 40) return (out.toString() + "…").trim()
+                if (out.isNotEmpty()) out.append(' ')
+                out.append(w)
+            }
+            return out.toString().clip(40)
+        }
+
         private fun day(i: Instant): LocalDate = i.atZone(ZoneOffset.UTC).toLocalDate()
         private fun start(d: LocalDate): Instant = d.atStartOfDay(KST).toInstant()
     }
@@ -143,10 +162,8 @@ class DetailBuilder(
         val base = productOf(key)
         if (key !in ProductCatalog.names) return base
         val product = kev.firstOrNull { it.value.cveId == cve }?.value?.product?.trim().orEmpty()
-        // 제품군 표시 이름에 이미 있는 낱말은 빼고 붙인다("Citrix NetScaler" + "NetScaler ADC" → "Citrix NetScaler ADC")
-        val have = base.lowercase().split(' ').toSet() + key.lowercase()
-        val extra = product.split(' ').filter { it.isNotBlank() && it.lowercase() !in have }.joinToString(" ")
-        return if (extra.isEmpty()) base else "$base ${extra.clip(40)}"
+        val extra = productSuffix(base, key, product)
+        return if (extra.isEmpty()) base else "$base $extra"
     }
 
     private fun productOf(key: String): String = when {

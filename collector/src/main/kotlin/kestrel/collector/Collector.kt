@@ -48,11 +48,13 @@ class Collector(
 
         /**
          * 먼저 알린 같은 위협: [before] 전 [RELATED_WINDOW] 안에 알린 것 중 같은 클러스터이거나 CVE가 겹치는 것.
+         * 이벤트 날짜도 [RELATED_WINDOW] 안이어야 한다(규칙 판이 바뀐 실행은 옛 이벤트를 지금 시각으로 기록하므로 기록 시각만으로는 부족하다).
          * 여럿이면 등급이 높고 늦은 것. 이벤트 자신의 기록은 뺀다
          */
         fun priorOf(e: AlertEvent, cves: List<String>, before: Instant, notified: List<Notified>): Notified? =
             notified.filter { n ->
                 n.firstSeen < before && Duration.between(n.firstSeen, before) <= RELATED_WINDOW && !n.sameAs(e) &&
+                    ChronoUnit.DAYS.between(n.date, e.date) in 0..RELATED_WINDOW.toDays() &&
                     (n.clusterKey == e.clusterKey || n.cves.any { it in cves })
             }.maxWithOrNull(compareBy<Notified>({ it.level }, { it.firstSeen }))
 
@@ -161,7 +163,11 @@ class Collector(
 
         // 이미 알린 것과 비교
         val fresh = events.filter { e -> prev.notified.none { it.sameAs(e) } }
-        val notified = (prev.notified + fresh.map { Notified(it.date, it.clusterKey, it.level, now, it.trigger, cvesOf(it, evidence(it, signals))) })
+        // CVE 목록이 없는 예전 기록은 지금 판정의 같은 이벤트 근거로 채운다(다른 클러스터의 같은 CVE를 잇는 데 쓴다)
+        val backfilled = prev.notified.map { n ->
+            if (n.cves.isNotEmpty()) n else events.firstOrNull { n.sameAs(it) }?.let { n.copy(cves = cvesOf(it, evidence(it, signals))) } ?: n
+        }
+        val notified = (backfilled + fresh.map { Notified(it.date, it.clusterKey, it.level, now, it.trigger, cvesOf(it, evidence(it, signals))) })
             .filter { it.date >= windowStart }
             .sortedWith(compareBy({ it.date }, { it.clusterKey }, { it.level }, { it.trigger }))
         val firstSeenOf = { e: AlertEvent -> notified.firstOrNull { it.sameAs(e) }?.firstSeen ?: now }
@@ -178,7 +184,7 @@ class Collector(
         val redNow = fresh.filter { it.level == Level.RED }.map { it.clusterKey }.toSet()
         val toPush = fresh.filterNot { it.level == Level.ORANGE && it.clusterKey in redNow }
         val live = prev.initialized && prev.rulesVersion == Rules.VERSION
-        val newAlerts = if (live) toPush.map { e -> evidence(e, signals).let { ev -> related(FeedEvent.of(e, now, ev, details.titles(e, ev)), e, ev, prev.notified) } } else emptyList()
+        val newAlerts = if (live) toPush.map { e -> evidence(e, signals).let { ev -> related(FeedEvent.of(e, now, ev, details.titles(e, ev)), e, ev, backfilled) } } else emptyList()
         val followups = if (live) followUps(prev, toPush.map { it.clusterKey }.toSet(), details, feedEvents, today, now) else emptyList()
 
         val state = CollectorState(
