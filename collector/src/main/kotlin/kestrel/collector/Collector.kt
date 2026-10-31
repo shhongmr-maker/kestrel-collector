@@ -38,6 +38,37 @@ class Collector(
         val FOLLOWUP_MAX_AGE: Duration = Duration.ofHours(48)
         /** 한 실행에서 보내는 추가 보도 알림 수 상한 */
         const val MAX_FOLLOWUPS = 5
+        /** 이 기간 안에 같은 위협을 알렸으면 새 알림을 상향·추가 확인·후속 보도로 보낸다([FeedEvent.relation]) */
+        val RELATED_WINDOW: Duration = Duration.ofDays(7)
+        private val CVE = Regex("CVE-\\d{4}-\\d{4,}")
+
+        /** 이벤트의 근거·클러스터 키·재알림 CVE에 나온 CVE(정렬, 중복 없음) */
+        fun cvesOf(e: AlertEvent, evidence: List<Signal>): List<String> =
+            (listOf(e.clusterKey, e.trigger) + evidence.map { it.detail }).flatMap { t -> CVE.findAll(t).map { it.value } }.distinct().sorted()
+
+        /**
+         * 먼저 알린 같은 위협: [before] 전 [RELATED_WINDOW] 안에 알린 것 중 같은 클러스터이거나 CVE가 겹치는 것.
+         * 여럿이면 등급이 높고 늦은 것. 이벤트 자신의 기록은 뺀다
+         */
+        fun priorOf(e: AlertEvent, cves: List<String>, before: Instant, notified: List<Notified>): Notified? =
+            notified.filter { n ->
+                n.firstSeen < before && Duration.between(n.firstSeen, before) <= RELATED_WINDOW && !n.sameAs(e) &&
+                    (n.clusterKey == e.clusterKey || n.cves.any { it in cves })
+            }.maxWithOrNull(compareBy<Notified>({ it.level }, { it.firstSeen }))
+
+        /** 먼저 알린 위협([prior])과의 관계. 침해사고는 후속 보도, 🔴는 상향(🟠 뒤)·추가 확인(🔴 뒤), 🟠는 원래 무음이라 그대로 */
+        fun relationOf(e: AlertEvent, prior: Notified?): String = when {
+            prior == null -> ""
+            e.clusterKey.startsWith("INC:") -> FeedEvent.UPDATE
+            e.level == Level.RED -> if (prior.level == Level.RED) FeedEvent.REPEAT else FeedEvent.UPGRADE
+            else -> ""
+        }
+
+        fun idOf(n: Notified) = listOf(n.date, n.clusterKey, n.level, n.trigger).filter { it.toString().isNotEmpty() }.joinToString("|")
+
+        /** 같은 클러스터·등급·재알림 CVE이고 날짜가 7일 안이면 같은 이벤트로 본다. 판정 창이 밀리며 날짜가 바뀌는 경우를 흡수한다. */
+        internal fun Notified.sameAs(e: AlertEvent) =
+            clusterKey == e.clusterKey && level == e.level && trigger == e.trigger && ChronoUnit.DAYS.between(date, e.date).let { it in -7..7 }
     }
 
     fun run(prev: CollectorState, now: Instant): RunResult {
@@ -130,21 +161,24 @@ class Collector(
 
         // 이미 알린 것과 비교
         val fresh = events.filter { e -> prev.notified.none { it.sameAs(e) } }
-        val notified = (prev.notified + fresh.map { Notified(it.date, it.clusterKey, it.level, now, it.trigger) })
+        val notified = (prev.notified + fresh.map { Notified(it.date, it.clusterKey, it.level, now, it.trigger, cvesOf(it, evidence(it, signals))) })
             .filter { it.date >= windowStart }
             .sortedWith(compareBy({ it.date }, { it.clusterKey }, { it.level }, { it.trigger }))
         val firstSeenOf = { e: AlertEvent -> notified.firstOrNull { it.sameAs(e) }?.firstSeen ?: now }
 
         val details = DetailBuilder(kev, nvd, kisa, news)
         val feedRaw = events.filter { it.date >= today.minusDays(feedDays) }
+        /** 먼저 알린 같은 위협이 있으면 관계와 그 이벤트 id를 붙인다 */
+        fun related(f: FeedEvent, e: AlertEvent, ev: List<Signal>, history: List<Notified>): FeedEvent =
+            priorOf(e, cvesOf(e, ev), f.firstSeen, history).let { p -> relationOf(e, p).let { r -> if (r.isEmpty()) f else f.copy(relation = r, ref = idOf(p!!)) } }
         val feedEvents = feedRaw
-            .map { e -> evidence(e, signals).let { ev -> FeedEvent.of(e, firstSeenOf(e), ev, details.titles(e, ev)) } }
+            .map { e -> evidence(e, signals).let { ev -> related(FeedEvent.of(e, firstSeenOf(e), ev, details.titles(e, ev)), e, ev, notified) } }
             .sortedWith(compareByDescending<FeedEvent> { it.date }.thenByDescending { it.level }.thenBy { it.clusterKey })
         // 한 실행에서 같은 클러스터가 🟠와 🔴를 함께 얻으면(따라잡기) 🔴만 알린다. 기록에는 둘 다 남긴다
         val redNow = fresh.filter { it.level == Level.RED }.map { it.clusterKey }.toSet()
         val toPush = fresh.filterNot { it.level == Level.ORANGE && it.clusterKey in redNow }
         val live = prev.initialized && prev.rulesVersion == Rules.VERSION
-        val newAlerts = if (live) toPush.map { e -> evidence(e, signals).let { ev -> FeedEvent.of(e, now, ev, details.titles(e, ev)) } } else emptyList()
+        val newAlerts = if (live) toPush.map { e -> evidence(e, signals).let { ev -> related(FeedEvent.of(e, now, ev, details.titles(e, ev)), e, ev, prev.notified) } } else emptyList()
         val followups = if (live) followUps(prev, toPush.map { it.clusterKey }.toSet(), details, feedEvents, today, now) else emptyList()
 
         val state = CollectorState(
@@ -194,7 +228,7 @@ class Collector(
             val articles = details.newsOf(key, latest.date.minusDays(7))
                 .filter { it.firstSeen > since && Duration.between(it.value.publishedAt, now) <= FOLLOWUP_MAX_AGE }
             if (articles.isEmpty()) return@mapNotNull null
-            val ref = listOf(latest.date, latest.clusterKey, latest.level, latest.trigger).filter { it.toString().isNotEmpty() }.joinToString("|")
+            val ref = idOf(latest)
             val title = feedEvents.firstOrNull { it.id == ref }?.title?.ifEmpty { null } ?: feedEvents.firstOrNull { it.clusterKey == key }?.title?.ifEmpty { null } ?: key
             val a = articles.last()
             FeedEvent(
@@ -208,10 +242,6 @@ class Collector(
         .take(MAX_FOLLOWUPS)
 
     private fun newAlertsRaw(live: Boolean, toPush: List<AlertEvent>) = if (live) toPush else emptyList()
-
-    /** 같은 클러스터·등급·재알림 CVE이고 날짜가 7일 안이면 같은 이벤트로 본다. 판정 창이 밀리며 날짜가 바뀌는 경우를 흡수한다. */
-    private fun Notified.sameAs(e: AlertEvent) =
-        clusterKey == e.clusterKey && level == e.level && trigger == e.trigger && ChronoUnit.DAYS.between(date, e.date).let { it in -7..7 }
 
     /** 이벤트 날짜까지 7일 안에 같은 클러스터에서 나온 신호. 카드의 근거로 쓴다. */
     private fun evidence(e: AlertEvent, signals: List<Signal>): List<Signal> =

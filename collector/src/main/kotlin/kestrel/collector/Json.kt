@@ -71,6 +71,7 @@ object Json {
             fa("notified") {
                 for (n in st.notified) obj {
                     f("date", n.date); f("clusterKey", n.clusterKey); f("level", n.level); f("trigger", n.trigger); f("firstSeen", n.firstSeen)
+                    if (n.cves.isNotEmpty()) fa("cves") { n.cves.forEach { v(it) } }
                 }
             }
             fo("bodyFailures") { for ((url, n) in st.bodyFailures.toSortedMap()) f(url, n) }
@@ -141,6 +142,7 @@ object Json {
         f("title", e.title)
         f("headline", e.headline)
         if (e.ref.isNotEmpty()) f("ref", e.ref)
+        if (e.relation.isNotEmpty()) f("relation", e.relation)
     }
 
     // ---- 읽기 ----
@@ -153,6 +155,7 @@ object Json {
             trigger = o.optString("trigger", ""), firstSeen = Instant.parse(o.getString("firstSeen")),
             evidence = o.getJSONArray("evidence").objects().map { Signal(it.date("date"), o.getString("clusterKey"), SignalKind.fromCode(it.getString("kind")), it.getString("detail")) },
             title = o.optString("title", ""), headline = o.optString("headline", ""), ref = o.optString("ref", ""),
+            relation = o.optString("relation", ""),
         )
     }
 
@@ -219,6 +222,7 @@ object Json {
                 Notified(
                     it.date("date"), it.getString("clusterKey"), Level.valueOf(it.getString("level")),
                     Instant.parse(it.getString("firstSeen")), it.optString("trigger", ""),
+                    it.optJSONArray("cves")?.let { a -> (0 until a.length()).map { i -> a.getString(i) } } ?: emptyList(),
                 )
             } ?: emptyList(),
             bodyFailures = o.optJSONObject("bodyFailures")?.let { b -> b.keySet().sorted().associateWith { b.getInt(it) } } ?: emptyMap(),

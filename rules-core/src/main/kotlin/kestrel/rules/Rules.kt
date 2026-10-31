@@ -22,7 +22,7 @@ import kestrel.rules.SignalKind.S7K_MAJOR
  */
 object Rules {
     /** 규칙 판. 바뀌면 수집기는 첫 실행처럼 그동안의 이벤트를 알리지 않고 기록만 한다. */
-    const val VERSION = "v6.1"
+    const val VERSION = "v6.2"
     private enum class Need { CORE }
 
     private val RED: List<Set<Any>> = listOf(

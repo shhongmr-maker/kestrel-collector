@@ -88,6 +88,7 @@ class DetailBuilder(
         private val CVE = Regex("""CVE-\d{4}-\d{4,7}""")
         private val KST = ZoneOffset.ofHours(9)
         private val INCIDENT_KINDS = setOf(SignalKind.S7, SignalKind.S7K, SignalKind.S7K_MAJOR)
+        private val KEV_KINDS = setOf(SignalKind.KEV_S6, SignalKind.KEV_S6_OLD, SignalKind.KEV_OTHER)
 
         /** 제품군 이름(ProductCatalog)의 표시 이름. */
         val DISPLAY = mapOf(
@@ -115,7 +116,7 @@ class DetailBuilder(
             ?: evidence.lastOrNull { it.kind == SignalKind.NEWS1_URGENT || it.kind == SignalKind.S3 }?.detail?.substringBefore(" / ")
             ?: ""
         val title = when {
-            e.trigger.isNotEmpty() -> "${productOf(key)} 새 취약점 실제 악용 (${e.trigger})"
+            e.trigger.isNotEmpty() -> "${withKevProduct(key, e.trigger)} 새 취약점 실제 악용 (${e.trigger})"
             key.startsWith("KISA:") -> evidence.firstOrNull { it.kind.code.startsWith("S2") || it.kind == SignalKind.KISA_ROUTINE }?.detail ?: key.removePrefix("KISA:")
             key.startsWith("INC:") -> "침해사고: " + (evidence.firstOrNull { it.kind in INCIDENT_KINDS }?.detail?.substringBefore(" / ")?.replace(Regex("^\\[[A-Z]+] "), "") ?: key.removePrefix("INC:"))
             else -> {
@@ -129,10 +130,23 @@ class DetailBuilder(
                     SignalKind.NEWS1_URGENT in kinds -> "긴급 보도"
                     else -> "보안 업데이트 권고"
                 }
-                "${productOf(key)} $phrase"
+                // KEV 등재면 업체 단위 클러스터(Cisco 등)라도 어느 제품인지 보이게 KEV의 제품 이름을 붙인다
+                val kevCve = evidence.lastOrNull { it.kind in KEV_KINDS }?.detail?.let { CVE.find(it)?.value }
+                "${if (kevCve != null && phrase.startsWith("취약점 실제 악용")) withKevProduct(key, kevCve) else productOf(key)} $phrase"
             }
         }
         return title.clip(120) to headline.clip(200)
+    }
+
+    /** 제품군 이름 뒤에 KEV 항목의 제품 이름(40자까지)을 붙인다. 제품 이름이 이미 제품군 이름을 담거나 KEV에 없으면 제품군 이름만 */
+    private fun withKevProduct(key: String, cve: String): String {
+        val base = productOf(key)
+        if (key !in ProductCatalog.names) return base
+        val product = kev.firstOrNull { it.value.cveId == cve }?.value?.product?.trim().orEmpty()
+        // 제품군 표시 이름에 이미 있는 낱말은 빼고 붙인다("Citrix NetScaler" + "NetScaler ADC" → "Citrix NetScaler ADC")
+        val have = base.lowercase().split(' ').toSet() + key.lowercase()
+        val extra = product.split(' ').filter { it.isNotBlank() && it.lowercase() !in have }.joinToString(" ")
+        return if (extra.isEmpty()) base else "$base ${extra.clip(40)}"
     }
 
     private fun productOf(key: String): String = when {

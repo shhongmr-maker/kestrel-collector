@@ -20,8 +20,14 @@ data class SourceState(
     val cursor: String? = null,
 )
 
-/** 이미 알린 이벤트. 같은 클러스터·등급·[trigger](KEV 새 CVE 재알림이면 그 CVE)를 다시 알리지 않기 위해 둔다. */
-data class Notified(val date: LocalDate, val clusterKey: String, val level: Level, val firstSeen: Instant, val trigger: String = "")
+/**
+ * 이미 알린 이벤트. 같은 클러스터·등급·[trigger](KEV 새 CVE 재알림이면 그 CVE)를 다시 알리지 않기 위해 둔다.
+ * [cves]는 근거에 나온 CVE로, 다른 클러스터에서 같은 CVE가 다시 알려질 때 이어진 위협으로 보는 데 쓴다(없던 기록은 빈 목록).
+ */
+data class Notified(
+    val date: LocalDate, val clusterKey: String, val level: Level, val firstSeen: Instant, val trigger: String = "",
+    val cves: List<String> = emptyList(),
+)
 
 /**
  * 실행 사이에 이어지는 상태(state/state.json). 원자료는 판정 창(기본 30일) 안의 것만 남긴다.

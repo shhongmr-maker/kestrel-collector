@@ -75,8 +75,17 @@ class FcmSender(
                 if (it.codePointCount(0, it.length) > 120) it.takeCodePoints(119) + "…" else it
             }
 
+        /** 알림 제목의 머리말: 추가 보도·후속 보도·상향·추가 확인·등급 */
+        fun prefix(e: FeedEvent): String = when {
+            e.isFollowUp -> "추가 보도 · "
+            e.relation == FeedEvent.UPDATE -> "후속 보도 · "
+            e.relation == FeedEvent.UPGRADE -> "🔴 상향 · "
+            e.relation == FeedEvent.REPEAT -> "🔴 추가 확인 · "
+            else -> "${levelLabel(e.level)} · "
+        }
+
         fun title(e: FeedEvent): String =
-            (if (e.isFollowUp) "추가 보도 · " else "${levelLabel(e.level)} · ") + e.title.ifEmpty { e.clusterKey + if (e.trigger.isNotEmpty()) " (${e.trigger})" else "" }.let {
+            prefix(e) + e.title.ifEmpty { e.clusterKey + if (e.trigger.isNotEmpty()) " (${e.trigger})" else "" }.let {
                 if (it.codePointCount(0, it.length) > 80) it.takeCodePoints(79) + "…" else it
             }
     }
@@ -115,6 +124,9 @@ class FcmSender(
         )
         // 추가 보도: 앱이 무음으로 띄우고, 누르면 처음 알린 이벤트(ref)의 상세를 연다
         if (e.isFollowUp) { data["kind"] = "followup"; data["ref"] = e.ref }
+        // 먼저 알린 같은 위협의 상향·추가 확인(앱: 한 번 진동, 반복 없음)과 침해사고 후속 보도(앱: 무음). 이전 앱은 kind를 모르므로 보통 알림으로 띄운다
+        if (e.isEscalation) { data["kind"] = "escalation"; data["ref"] = e.ref; data["relation"] = e.relation }
+        if (e.relation == FeedEvent.UPDATE) { data["kind"] = "update"; data["ref"] = e.ref; data["relation"] = e.relation }
         val w = JSONStringer().`object`().key("message").`object`().key(if (target.fid) "fid" else "token").value(target.value)
         w.key("data").`object`(); data.forEach { (k, v) -> w.key(k).value(v) }; w.endObject()
         when (mode) {

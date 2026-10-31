@@ -220,6 +220,7 @@ class SignalExtractor(
  * - S7(해외): 다른 매체의 침해 기사 두 건이 48시간 안에 같은 고유명사를 공유하고, 대형 사고 표현이 있으면 성립(🟠).
  * - S7K(국내): 한국어 매체의 국내 기관 침해사고 기사 한 건(🟠). 금융·통신·공공·대규모면 S7K_MAJOR(🔴).
  * v6: 제목 판별을 넓히고(공급망 침해·유출·탈취) 법 집행·칼럼·가정형("could") 기사는 뺐다(docs/10).
+ * v6.2: 국내 판별에서 해외 기관 사고(제목이 나라 이름으로 시작)와 "단정 못해"·"연관성 확인 안 돼" 기사를 뺐다.
  */
 object Incidents {
     private val INCIDENT = Regex(
@@ -275,6 +276,11 @@ object Incidents {
             "취약점|RCE|CVE|증가",
         RegexOption.IGNORE_CASE,
     )
+    // v6.2: 해외 기관의 사고(제목이 나라 이름으로 시작)와 사실이 아님·단정할 수 없음을 다룬 기사는 국내 침해사고가 아니다
+    private val FOREIGN_KO = Regex(
+        "^(\\[[^\\]]{1,10}\\]\\s*)*[‘“\"']?(美|日|中|英|獨|佛|濠|브라질|미국|일본|중국|대만|홍콩|영국|프랑스|독일|호주|인도|베트남|러시아|이란|캐나다|싱가포르|네덜란드|유럽|태국|필리핀|인도네시아|말레이시아|멕시코|스페인|이탈리아|스웨덴|이스라엘|우크라이나|튀르키예|터키|사우디|덴마크|노르웨이|핀란드|폴란드|벨기에|스위스|오스트리아|아일랜드|포르투갈|그리스|체코|헝가리|루마니아|뉴질랜드|아르헨티나|칠레|콜롬비아|페루|남아공|나이지리아|이집트|파키스탄|몽골|카자흐스탄|글로벌|해외)",
+    )
+    private val NOT_FACT_KO = Regex("단정|연관성 (확인 안|없)|사실무근|해킹 (아냐|아니)")
     private val SEVERE_KO = Regex(
         "은행|카드|생명|보험|증권|저축은행|캐피탈|금융|텔레콤|통신사|\\bKT\\b|SKT|LG ?U\\+|유심|USIM|" +
             "\\d[\\d,.]*\\s?만\\s?(명|건)|\\d{1,3}(,\\d{3}){2,}|억\\s?건|부처|정부24|국세청|건강보험|병원",
@@ -331,6 +337,7 @@ object Incidents {
     /** 국내 침해사고 기사면 기관 이름, 아니면 null. */
     fun koreanIncident(title: String): String? {
         if (!INC_KO.containsMatchIn(title) || !ACTUAL_KO.containsMatchIn(title) || NOT_INC_KO.containsMatchIn(title)) return null
+        if (FOREIGN_KO.containsMatchIn(title) || NOT_FACT_KO.containsMatchIn(title)) return null
         val e = koreanEntity(title)
         // 일반 명사(국내·금융권·AI 등)는 한 글자 조사를 뗀 형태도 본다("AI가")
         if (e.isEmpty() || e in KO_GENERIC || KO_PARTICLE1.replace(e, "") in KO_GENERIC || KO_BAD_START.containsMatchIn(e)) return null
