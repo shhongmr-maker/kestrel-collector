@@ -76,6 +76,10 @@ object Json {
             }
             fo("bodyFailures") { for ((url, n) in st.bodyFailures.toSortedMap()) f(url, n) }
             fo("followups") { for ((key, at) in st.followups.toSortedMap()) f(key, at) }
+            fo("stats") {
+                f("lastRunAt", st.stats.lastRunAt)
+                fa("days") { for (d in st.stats.days) day(d) }
+            }
         }
     }.s.toString()
 
@@ -83,6 +87,18 @@ object Json {
         f("vendor", r.vendor); f("product", r.product); f("exact", r.exact); f("from", r.from); f("fromExcluding", r.fromExcluding)
         f("lessThan", r.lessThan); f("lessThanOrEqual", r.lessThanOrEqual)
     }
+
+    private fun W.day(d: DayStats) = obj {
+        f("date", d.date); f("runs", d.runs); f("maxGapMin", d.maxGapMin); f("red", d.red); f("orange", d.orange)
+        f("upgrade", d.upgrade); f("repeat", d.repeat); f("update", d.update); f("followups", d.followups)
+        f("pushOk", d.pushOk); f("pushFail", d.pushFail); f("sourceErrors", d.sourceErrors)
+    }
+
+    private fun readDay(o: JSONObject) = DayStats(
+        o.date("date"), o.optInt("runs"), o.optInt("maxGapMin"), o.optInt("red"), o.optInt("orange"),
+        o.optInt("upgrade"), o.optInt("repeat"), o.optInt("update"), o.optInt("followups"),
+        o.optInt("pushOk"), o.optInt("pushFail"), o.optInt("sourceErrors"),
+    )
 
     private fun W.doc(d: SourceDoc) = obj {
         f("id", d.id); f("kind", d.kind); f("title", d.title); f("url", d.url); f("date", d.date); f("text", d.text)
@@ -128,6 +144,7 @@ object Json {
                     fa("cves") { b.cves.forEach { v(it) } }
                 }
             }
+            fa("stats") { for (d in feed.stats) day(d) }
         }
     }.s.toString()
 
@@ -227,6 +244,9 @@ object Json {
             } ?: emptyList(),
             bodyFailures = o.optJSONObject("bodyFailures")?.let { b -> b.keySet().sorted().associateWith { b.getInt(it) } } ?: emptyMap(),
             followups = o.optJSONObject("followups")?.let { b -> b.keySet().sorted().associateWith { Instant.parse(b.getString(it)) } } ?: emptyMap(),
+            stats = o.optJSONObject("stats")?.let { st ->
+                RunStats(st.instant("lastRunAt"), st.optJSONArray("days")?.objects()?.map { readDay(it) } ?: emptyList())
+            } ?: RunStats(),
         )
     }
 

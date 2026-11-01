@@ -70,7 +70,10 @@ private fun requeue(opts: Map<String, String>) {
     val (results, error) = if (statusFile.exists()) Json.readPushStatus(statusFile.readText()) else emptyList<FcmSender.Result>() to "push-status 없음"
     val key = DataKey.fromEnv()
     val out = Requeue.apply(Json.readState(DataKey.readState(stateFile.readText(), key)), alerts, results, error, java.time.LocalDate.now(java.time.ZoneOffset.UTC))
-    stateFile.writeText(DataKey.writeState(Json.writeState(out.state) + "\n", key))
+    // 운영 집계: 기기별 발송 성공·실패(비밀 값이 없어 보내지 않은 경우는 세지 않는다)
+    val failed = results.count { !it.ok } + if (error != null && error != Requeue.NO_SECRETS && results.isEmpty()) alerts.size else 0
+    val state = out.state.copy(stats = out.state.stats.afterPush(Instant.now(), results.count { it.ok }, failed))
+    stateFile.writeText(DataKey.writeState(Json.writeState(state) + "\n", key))
     println(if (out.requeued.isEmpty()) "requeue: 다시 보낼 알림 없음" else "requeue: 다음 실행에서 다시 보냄 ${out.requeued}")
 }
 

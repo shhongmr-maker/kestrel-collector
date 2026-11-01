@@ -102,6 +102,17 @@ class DetailBuilder(
 
         fun display(group: String): String = DISPLAY[group] ?: group
 
+        private val PRODUCT_TAIL = Regex("""\s+[–—+|:]\s+|\s+-\s+|\s*\(""")
+
+        /** 긴 제품 이름을 앞부분만: "Project Manager – AI Powered …" → "Project Manager", 40자가 넘으면 낱말 단위로 */
+        fun shortProduct(name: String): String {
+            val head = name.split(PRODUCT_TAIL).first().trim()
+            if (head.length <= 40) return head
+            val out = StringBuilder()
+            for (w in head.split(' ')) { if (out.length + w.length + 1 > 40) break; if (out.isNotEmpty()) out.append(' '); out.append(w) }
+            return out.toString() + "…"
+        }
+
         private val PRODUCT_SPLIT = Regex("""\s+(and|&)\s+|\s*[,;/(]\s*""")
 
         /**
@@ -168,7 +179,10 @@ class DetailBuilder(
 
     private fun productOf(key: String): String = when {
         key in ProductCatalog.names -> display(key)
-        CVE.matches(key) -> kev.firstOrNull { it.value.cveId == key }?.value?.let { "${it.vendorProject} ${it.product}" } ?: key
+        CVE.matches(key) -> kev.firstOrNull { it.value.cveId == key }?.value?.let { "${it.vendorProject} ${it.product}" }
+            // KEV에 없으면 NVD 영향 범위의 제품 이름(짧게). 그것도 없으면 CVE 번호
+            ?: nvd.firstOrNull { it.value.id == key }?.value?.affected?.firstOrNull()?.product?.let(::shortProduct)?.ifEmpty { null }
+            ?: key
         else -> key
     }
 

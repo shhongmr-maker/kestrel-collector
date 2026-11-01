@@ -195,6 +195,7 @@ class Collector(
             bodyFailures = failures.toSortedMap(),
             followups = (prev.followups + followups.associate { it.clusterKey to now })
                 .filterValues { Duration.between(it, now) <= Duration.ofDays(feedDays + 1) }.toSortedMap(),
+            stats = prev.stats.afterRun(now, newAlerts + followups, statuses.values.count { it.lastAttemptAt == now && it.error != null }),
         )
         val clusters = (feedRaw + newAlertsRaw(live, toPush)).groupBy { it.clusterKey }.mapValues { (key, es) ->
             details.detail(key, es.minOf { it.date }, es.flatMap { evidence(it, signals) }.distinct())
@@ -210,6 +211,7 @@ class Collector(
             ),
             notices = details.notices(today.minusDays(feedDays)),
             briefs = details.briefs(today.minusDays(feedDays)),
+            stats = state.stats.recent(now),
         )
         return RunResult(state, feed, newAlerts + followups)
     }

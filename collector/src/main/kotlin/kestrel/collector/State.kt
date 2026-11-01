@@ -47,4 +47,6 @@ data class CollectorState(
     val bodyFailures: Map<String, Int> = emptyMap(),
     /** 추가 보도 알림을 마지막으로 보낸 시각(클러스터별). [Collector.FOLLOWUP_GAP]보다 자주 보내지 않는다 */
     val followups: Map<String, Instant> = emptyMap(),
+    /** 운영 집계(일별 실행·알림·발송 수) */
+    val stats: RunStats = RunStats(),
 )
