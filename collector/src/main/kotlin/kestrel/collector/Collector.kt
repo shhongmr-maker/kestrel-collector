@@ -200,18 +200,22 @@ class Collector(
         val clusters = (feedRaw + newAlertsRaw(live, toPush)).groupBy { it.clusterKey }.mapValues { (key, es) ->
             details.detail(key, es.minOf { it.date }, es.flatMap { evidence(it, signals) }.distinct())
         }
+        val incidentInfos = details.incidents(
+            today.minusDays(feedDays),
+            feedRaw.filter { it.clusterKey.startsWith("INC:") }.groupBy { it.clusterKey }.mapValues { (_, es) -> es.maxOf { it.level }.name },
+        )
+        // 뉴스 탭에는 취약점 알림의 원문 기사·침해사고 기사로 이미 보이는 것을 뺀다
+        val shown = (clusters.values.flatMap { c -> c.docs.filter { it.kind == "news" }.map { it.url } } + incidentInfos.flatMap { i -> i.articles.map { it.url } }).toSet()
         val feed = Feed(
             generatedAt = now,
             sources = Sources.ALL.map { FeedSource.of(it, statuses[it] ?: SourceState()) },
             events = feedEvents,
             clusters = clusters.toSortedMap(),
-            incidents = details.incidents(
-                today.minusDays(feedDays),
-                feedRaw.filter { it.clusterKey.startsWith("INC:") }.groupBy { it.clusterKey }.mapValues { (_, es) -> es.maxOf { it.level }.name },
-            ),
+            incidents = incidentInfos,
             notices = details.notices(today.minusDays(feedDays)),
             briefs = details.briefs(today.minusDays(feedDays)),
             stats = state.stats.recent(now),
+            news = details.news(today.minusDays(feedDays), shown),
         )
         return RunResult(state, feed, newAlerts + followups)
     }

@@ -145,6 +145,12 @@ object Json {
                 }
             }
             fa("stats") { for (d in feed.stats) day(d) }
+            fa("news") {
+                for (n in feed.news) obj {
+                    f("at", n.at); f("source", n.source); f("title", n.title); f("url", n.url); f("topic", n.topic); f("ai", n.ai)
+                    f("major", n.major); f("sources", n.sources)
+                }
+            }
         }
     }.s.toString()
 

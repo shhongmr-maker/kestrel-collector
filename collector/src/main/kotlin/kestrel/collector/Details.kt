@@ -7,6 +7,7 @@ import kestrel.rules.KevEntry
 import kestrel.rules.KisaPost
 import kestrel.rules.KisaTitleClassifier
 import kestrel.rules.Level
+import kestrel.rules.NewsTopics
 import kestrel.rules.NvdCve
 import kestrel.rules.ProductCatalog
 import kestrel.rules.Signal
@@ -64,6 +65,13 @@ data class NoticeInfo(val date: LocalDate, val title: String, val url: String)
 data class BriefInfo(val at: Instant, val kind: String, val source: String, val title: String, val url: String, val group: String, val cves: List<String>)
 
 /**
+ * 일반 보안 뉴스 한 건(뉴스 탭). 공개 저장소에 싣는 것이라 본문은 넣지 않고 제목·링크·출처·시각만(저작권).
+ * [topic]: NewsTopics.Topic id, [ai]: AI 보안이면 하위 분류 id(아니면 빈 문자열),
+ * [major]: 주요(긴급 표현 · 두 매체 이상 · AI 공급망·서비스 사고·공격), [sources]: 같은 이야기를 다룬 매체 수
+ */
+data class NewsItem(val at: Instant, val source: String, val title: String, val url: String, val topic: String, val ai: String, val major: Boolean, val sources: Int)
+
+/**
  * 캐시한 원자료로 클러스터 상세·침해사고·생활 보안 공지를 만든다. 수집 결과만으로 정해지므로 실행마다 같다.
  * 크기를 묶어 둔다: 문서는 클러스터당 [MAX_DOCS]개, 문서 본문은 종류별 상한까지.
  */
@@ -79,6 +87,8 @@ class DetailBuilder(
         const val MAX_RANGES = 30
         const val MAX_BRIEFS = 80
         const val MAX_INCIDENTS = 30
+        /** 뉴스 탭에 싣는 최대 건수(최신순). 한 건 약 250바이트 */
+        const val MAX_NEWS = 200
         /**
          * 공개 feed에 싣는 원문 길이. 기사는 요약 한두 문장(저작권: 공개 저장소에 본문을 옮기지 않는다), 보호나라 공지는 조치 안내 앞부분.
          * 전체 원문은 "원문 보기"와 AI의 원문 링크 열람(web_fetch)으로 본다. NVD·KEV(미국 정부 자료)는 그대로 둔다
@@ -333,6 +343,27 @@ class DetailBuilder(
                 CVE.findAll(a.value.title + " " + a.value.text).map { it.value }.distinct().take(6).toList())
         }
         return (fromKisa + fromNews).sortedWith(compareByDescending<BriefInfo> { it.at }.thenBy { it.title }).take(MAX_BRIEFS)
+    }
+
+    /**
+     * 일반 보안 뉴스: 최근 [since]부터의 기사 가운데 [exclude](취약점 알림 원문·침해사고 기사로 이미 보이는 주소)를 뺀 것. 최신순 최대 [MAX_NEWS]건.
+     * 같은 이야기를 다룬 매체 수는 48시간 안에 고유명사가 겹치는 다른 매체 기사로 센다.
+     */
+    fun news(since: LocalDate, exclude: Set<String>): List<NewsItem> {
+        val recent = news.filter { day(it.value.publishedAt) >= since }
+        val tokens = recent.associate { it.url to Incidents.tokens(it.value.title) }
+        return recent.filter { it.url !in exclude }.map { a ->
+            val mine = tokens[a.url].orEmpty()
+            val sameStory = recent.filter { b ->
+                b.value.source != a.value.source && Duration.between(b.value.publishedAt, a.value.publishedAt).abs() <= Duration.ofHours(48) &&
+                    (tokens[b.url].orEmpty() intersect mine).isNotEmpty()
+            }.map { it.value.source }.toSet()
+            val topic = NewsTopics.topic(a.value.title, a.value.text)
+            val ai = NewsTopics.aiKind(a.value.title, a.value.text)
+            val major = UrgentText.isUrgent(a.value) || sameStory.isNotEmpty() ||
+                ai in setOf(NewsTopics.AiKind.SUPPLY, NewsTopics.AiKind.SERVICE, NewsTopics.AiKind.ATTACK)
+            NewsItem(a.value.publishedAt, a.value.source, a.value.title.clip(200), a.url, topic.id, ai?.id.orEmpty(), major, 1 + sameStory.size)
+        }.sortedWith(compareByDescending<NewsItem> { it.at }.thenBy { it.title }).take(MAX_NEWS)
     }
 
     /** 생활 보안 공지(S2c: 피싱·스미싱·사칭). */

@@ -19,6 +19,8 @@ data class Feed(
     val briefs: List<BriefInfo> = emptyList(),
     /** 운영 집계 최근 14일(한국 날짜). 앱의 운영 통계 화면이 쓴다. 0.12 이전 앱은 모르는 필드라 무시한다 */
     val stats: List<DayStats> = emptyList(),
+    /** 일반 보안 뉴스(알림·침해사고에 쓰인 기사 제외). 앱의 뉴스 탭이 쓴다. 0.16 이전 앱은 무시한다 */
+    val news: List<NewsItem> = emptyList(),
 ) {
     companion object {
         const val SCHEMA = 1
