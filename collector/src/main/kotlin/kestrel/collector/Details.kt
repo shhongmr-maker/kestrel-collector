@@ -87,8 +87,15 @@ class DetailBuilder(
         const val MAX_RANGES = 30
         const val MAX_BRIEFS = 80
         const val MAX_INCIDENTS = 30
-        /** 뉴스 탭에 싣는 최대 건수(최신순). 한 건 약 250바이트 */
+        /** 뉴스 탭에 싣는 최대 건수(최신순). 한 건 약 300바이트 */
         const val MAX_NEWS = 200
+
+        /** 같은 이야기를 묶을 때 빼는 흔한 낱말(이것만 겹치면 같은 이야기로 보지 않는다) */
+        val STORY_STOP = setOf(
+            "Your", "You", "CVSS", "SOC", "How", "Why", "What", "When", "Webinar", "Fake", "Patches", "Patch", "Flaws", "Bug", "Bugs", "Exploited",
+            "Actively", "Attackers", "Attacker", "Run", "Code", "Operations", "ThreatsDay", "Recap", "Ways", "Already", "Operate", "Browser",
+            "Devices", "Device", "Phone", "Phones", "Apps", "App", "Mobile", "Network", "Networks", "Report", "Researchers", "Warns", "Warn",
+        )
         /**
          * 공개 feed에 싣는 원문 길이. 기사는 요약 한두 문장(저작권: 공개 저장소에 본문을 옮기지 않는다), 보호나라 공지는 조치 안내 앞부분.
          * 전체 원문은 "원문 보기"와 AI의 원문 링크 열람(web_fetch)으로 본다. NVD·KEV(미국 정부 자료)는 그대로 둔다
@@ -351,7 +358,7 @@ class DetailBuilder(
      */
     fun news(since: LocalDate, exclude: Set<String>): List<NewsItem> {
         val recent = news.filter { day(it.value.publishedAt) >= since }
-        val tokens = recent.associate { it.url to Incidents.tokens(it.value.title) }
+        val tokens = recent.associate { it.url to (Incidents.tokens(it.value.title) - STORY_STOP) }
         return recent.filter { it.url !in exclude }.map { a ->
             val mine = tokens[a.url].orEmpty()
             val sameStory = recent.filter { b ->
@@ -360,8 +367,9 @@ class DetailBuilder(
             }.map { it.value.source }.toSet()
             val topic = NewsTopics.topic(a.value.title, a.value.text)
             val ai = NewsTopics.aiKind(a.value.title, a.value.text)
-            val major = UrgentText.isUrgent(a.value) || sameStory.isNotEmpty() ||
-                ai in setOf(NewsTopics.AiKind.SUPPLY, NewsTopics.AiKind.SERVICE, NewsTopics.AiKind.ATTACK)
+            // 업계 소식(칼럼·출시·행사 등)은 주요로 올리지 않는다
+            val major = topic != NewsTopics.Topic.INDUSTRY && (UrgentText.isUrgent(a.value) || sameStory.isNotEmpty() ||
+                ai in setOf(NewsTopics.AiKind.SUPPLY, NewsTopics.AiKind.SERVICE, NewsTopics.AiKind.ATTACK))
             NewsItem(a.value.publishedAt, a.value.source, a.value.title.clip(200), a.url, topic.id, ai?.id.orEmpty(), major, 1 + sameStory.size)
         }.sortedWith(compareByDescending<NewsItem> { it.at }.thenBy { it.title }).take(MAX_NEWS)
     }
