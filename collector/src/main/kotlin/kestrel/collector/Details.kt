@@ -12,6 +12,9 @@ import kestrel.rules.NvdCve
 import kestrel.rules.ProductCatalog
 import kestrel.rules.Signal
 import kestrel.rules.SignalKind
+import kestrel.rules.SignalExtractor
+import kestrel.rules.VendorAdvisory
+import kestrel.rules.VendorExploit
 import kestrel.rules.UrgentText
 import kestrel.rules.VersionRange
 import java.time.Duration
@@ -80,9 +83,13 @@ class DetailBuilder(
     private val nvd: List<Seen<NvdCve>>,
     private val kisa: List<Seen<KisaPost>>,
     private val news: List<Seen<Article>>,
+    /** 제조사 보안 공지(v6.3) */
+    private val vendor: List<Seen<VendorAdvisory>> = emptyList(),
 ) {
     companion object {
         const val MAX_DOCS = 10
+        /** 제조사 공지 요약 길이. 공개 feed라 앞부분만 둔다(기사처럼 저작물이므로 짧게, 전체는 "원문 보기") */
+        const val VENDOR_EXCERPT = 300
         const val MAX_CVES = 12
         const val MAX_RANGES = 30
         const val MAX_BRIEFS = 80
@@ -103,6 +110,8 @@ class DetailBuilder(
         const val NEWS_EXCERPT = 200
         const val KISA_EXCERPT = 1000
         private val CVE = Regex("""CVE-\d{4}-\d{4,7}""")
+        /** S8 근거 끝에 붙은 CVE 목록 */
+        private val CVE_TAIL = Regex("""( CVE-\d{4}-\d{4,7})+$""")
         private val KST = ZoneOffset.ofHours(9)
         private val INCIDENT_KINDS = setOf(SignalKind.S7, SignalKind.S7K, SignalKind.S7K_MAJOR)
         private val KEV_KINDS = setOf(SignalKind.KEV_S6, SignalKind.KEV_S6_OLD, SignalKind.KEV_OTHER)
@@ -115,6 +124,7 @@ class DetailBuilder(
             "NodeJS" to "Node.js", "OracleEBS" to "Oracle E-Business Suite·PeopleSoft", "VeloCloud" to "VeloCloud SD-WAN",
             "LoadMaster" to "Progress LoadMaster", "ServU" to "SolarWinds Serv-U", "WingFTP" to "Wing FTP Server",
             "Collabora" to "Collabora·Nextcloud·ownCloud", "ScreenConnect" to "ConnectWise ScreenConnect", "NCentral" to "N-able N-central",
+            "WindowsServer" to "Windows 서버·Active Directory", "Chrome" to "Google Chrome",
         )
 
         fun display(group: String): String = DISPLAY[group] ?: group
@@ -159,7 +169,8 @@ class DetailBuilder(
         val kinds = evidence.map { it.kind }.toSet()
         val maxScore = evidence.filter { it.kind == SignalKind.S1 || it.kind == SignalKind.S1_8 }
             .mapNotNull { it.detail.split(' ').getOrNull(1)?.toDoubleOrNull() }.maxOrNull()
-        val headline = evidence.lastOrNull { it.kind.code.startsWith("S2") || it.kind == SignalKind.KISA_ROUTINE }?.detail
+        val headline = evidence.lastOrNull { it.kind == SignalKind.S8 }?.detail?.replace(CVE_TAIL, "")
+            ?: evidence.lastOrNull { it.kind.code.startsWith("S2") || it.kind == SignalKind.KISA_ROUTINE }?.detail
             ?: evidence.lastOrNull { it.kind == SignalKind.NEWS1_URGENT || it.kind == SignalKind.S3 }?.detail?.substringBefore(" / ")
             ?: ""
         val title = when {
@@ -169,6 +180,7 @@ class DetailBuilder(
             else -> {
                 val phrase = when {
                     SignalKind.KEV_S6 in kinds || SignalKind.KEV_S6_OLD in kinds || SignalKind.KEV_OTHER in kinds -> "취약점 실제 악용 (CISA KEV 등재)"
+                    SignalKind.S8 in kinds -> "취약점 실제 악용 (제조사 공지)"
                     SignalKind.S2A in kinds -> "KISA 긴급 보안 공지"
                     SignalKind.S1 in kinds -> "치명적 원격 취약점" + (maxScore?.let { " (CVSS $it)" } ?: "")
                     SignalKind.S3 in kinds -> "긴급 보도 확산"
@@ -233,6 +245,13 @@ class DetailBuilder(
                 )
         }
         val newsHits = newsOf(key, from)
+        // 제조사 공지: 이 클러스터로 묶이는 실제 악용 공지와, 근거에 나온 CVE를 다룬 공지(같은 업체의 무관한 공지는 싣지 않는다)
+        val evidenceCves = (listOf(key) + evidence.map { it.detail }).flatMap { t -> CVE.findAll(t).map { it.value } }.toSet()
+        val vendorHits = vendor.filter { v ->
+            v.value.date >= from && (
+                (VendorExploit.of(v.value) && SignalExtractor.vendorKey(v.value) == key) || v.value.cves.any { it in evidenceCves }
+                )
+        }.sortedByDescending { it.value.date }.take(3)
 
         // CVE: 근거 신호 → KEV → KISA 본문 → 기사 순서로 모은다
         val cves = LinkedHashSet<String>()
@@ -241,6 +260,7 @@ class DetailBuilder(
         kevHits.forEach { cves += it.cveId }
         kisaHits.forEach { p -> CVE.findAll(p.value.body).forEach { cves += it.value } }
         newsHits.forEach { a -> CVE.findAll(a.value.title).forEach { cves += it.value } }
+        vendorHits.forEach { v -> cves += v.value.cves }
         val cveList = cves.take(MAX_CVES)
 
         val nvdById = nvd.associateBy { it.value.id }
@@ -255,6 +275,10 @@ class DetailBuilder(
             .take(MAX_RANGES)
 
         val docs = mutableListOf<SourceDoc>()
+        vendorHits.forEach { v ->
+            docs += SourceDoc("vendor:${docs.size}", "vendor", "[${v.value.vendor}] ${v.value.title}", v.url, start(v.value.date),
+                v.value.text.ifEmpty { v.value.title }.clip(VENDOR_EXCERPT))
+        }
         kisaHits.sortedByDescending { it.value.date }.forEach { p ->
             docs += SourceDoc("kisa:${p.value.date}:${docs.size}", "kisa", p.value.title, p.url, start(p.value.date), p.value.body.ifEmpty { p.value.title }.clip(KISA_EXCERPT))
         }

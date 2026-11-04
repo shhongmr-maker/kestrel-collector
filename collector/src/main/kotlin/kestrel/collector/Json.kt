@@ -5,6 +5,7 @@ import kestrel.rules.KevEntry
 import kestrel.rules.KisaPost
 import kestrel.rules.Level
 import kestrel.rules.NvdCve
+import kestrel.rules.VendorAdvisory
 import kestrel.rules.Signal
 import kestrel.rules.SignalKind
 import kestrel.rules.VersionRange
@@ -68,6 +69,10 @@ object Json {
             }
             key("kisa").seen(st.kisa) { f("date", it.date); f("title", it.title); f("body", it.body) }
             key("news").seen(st.news) { f("source", it.source); f("publishedAt", it.publishedAt); f("title", it.title); f("text", it.text) }
+            key("vendor").seen(st.vendor) {
+                f("vendor", it.vendor); f("date", it.date); f("title", it.title); f("text", it.text)
+                fa("cves") { it.cves.forEach { c -> v(c) } }; f("exploited", it.exploited)
+            }
             fa("notified") {
                 for (n in st.notified) obj {
                     f("date", n.date); f("clusterKey", n.clusterKey); f("level", n.level); f("trigger", n.trigger); f("firstSeen", n.firstSeen)
@@ -241,6 +246,13 @@ object Json {
             },
             kisa = o.seen("kisa") { KisaPost(it.date("date"), it.getString("title"), it.optString("body", "")) },
             news = o.seen("news") { Article(it.getString("source"), Instant.parse(it.getString("publishedAt")), it.getString("title"), it.getString("text")) },
+            vendor = o.seen("vendor") {
+                VendorAdvisory(
+                    it.getString("vendor"), it.date("date"), it.getString("title"), it.optString("text", ""),
+                    it.optJSONArray("cves")?.let { a -> (0 until a.length()).map { i -> a.getString(i) } } ?: emptyList(),
+                    if (!it.has("exploited") || it.isNull("exploited")) null else it.getBoolean("exploited"),
+                )
+            },
             notified = o.optJSONArray("notified")?.objects()?.map {
                 Notified(
                     it.date("date"), it.getString("clusterKey"), Level.valueOf(it.getString("level")),

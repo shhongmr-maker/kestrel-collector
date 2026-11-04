@@ -5,6 +5,7 @@ import kestrel.rules.KevEntry
 import kestrel.rules.KisaPost
 import kestrel.rules.Level
 import kestrel.rules.NvdCve
+import kestrel.rules.VendorAdvisory
 import java.time.Instant
 import java.time.LocalDate
 
@@ -42,6 +43,8 @@ data class CollectorState(
     val nvd: List<Seen<NvdCve>> = emptyList(),
     val kisa: List<Seen<KisaPost>> = emptyList(),
     val news: List<Seen<Article>> = emptyList(),
+    /** 제조사 보안 공지(v6.3). 예전 state에는 없다 */
+    val vendor: List<Seen<VendorAdvisory>> = emptyList(),
     val notified: List<Notified> = emptyList(),
     /** 보호나라 본문 받기 실패 횟수(링크별). [Collector.KISA_BODY_TRIES]번 실패하면 더 받지 않는다. */
     val bodyFailures: Map<String, Int> = emptyMap(),

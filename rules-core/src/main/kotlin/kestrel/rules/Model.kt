@@ -17,7 +17,8 @@ enum class SignalKind(val code: String) {
     NEWS1_URGENT("NEWS1_URGENT"), // 긴급 표현이 있는 기사 (키마다 하루 한 번)
     S7("S7"),                     // 해외 침해사고 보도(두 매체)
     S7K("S7K"),                   // 국내 침해사고 보도(v6, 한국 매체)
-    S7K_MAJOR("S7K_MAJOR");       // 국내 침해사고 중 금융·통신·공공·대규모(v6)
+    S7K_MAJOR("S7K_MAJOR"),       // 국내 침해사고 중 금융·통신·공공·대규모(v6)
+    S8("S8");                     // 제조사 보안 공지가 실제 악용을 밝힘(v6.3)
 
     companion object {
         private val byCode = entries.associateBy { it.code }

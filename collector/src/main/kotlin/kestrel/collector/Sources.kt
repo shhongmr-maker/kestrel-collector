@@ -7,6 +7,7 @@ import kestrel.rules.KisaPost
 import kestrel.rules.NvdCve
 import kestrel.rules.ProductCatalog
 import kestrel.rules.SignalKind
+import kestrel.rules.VendorAdvisory
 import java.net.URLEncoder
 import java.time.Duration
 import java.time.Instant
@@ -38,7 +39,8 @@ class Sources(
         const val THN = "thn"
         const val BC = "bc"
         const val DS = "ds"
-        val ALL = listOf(KEV, NVD, KISA, THN, BC, DS)
+        const val VENDOR = "vendor"
+        val ALL = listOf(KEV, NVD, KISA, THN, BC, DS, VENDOR)
 
         const val KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
         const val NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
@@ -46,6 +48,17 @@ class Sources(
         const val THN_URL = "https://thehackernews.com/feeds/posts/default"
         const val BC_URL = "https://www.bleepingcomputer.com/news/security/"
         const val DS_URL = "https://www.dailysecu.com/rss/allArticle.xml"
+        const val FORTINET_URL = "https://filestore.fortinet.com/fortiguard/rss/ir.xml"
+        const val CISCO_URL = "https://sec.cloudapps.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml"
+        const val IVANTI_URL = "https://www.ivanti.com/blog/topics/security-advisory/rss"
+        const val PALO_ALTO_LIST_URL = "https://security.paloaltonetworks.com/json/?limit=40"
+        const val PALO_ALTO_RECORD_URL = "https://security.paloaltonetworks.com/json/"
+
+        /** 제조사 공지는 30분에 한 번까지 받는다(네 곳, 합쳐 약 300KB) */
+        val VENDOR_INTERVAL: Duration = Duration.ofMinutes(30)
+        /** Palo Alto 공지별 기록은 최근 이 기간의 높음·치명 공지만, 한 실행에 [PALO_ALTO_RECORDS_PER_RUN]건까지 받는다 */
+        val PALO_ALTO_RECENT: Duration = Duration.ofDays(14)
+        const val PALO_ALTO_RECORDS_PER_RUN = 5
 
         /** NVD는 증분 동기화를 2시간에 한 번 이하로 하라고 권고한다(검증 필요 목록 참고). */
         val NVD_INTERVAL: Duration = Duration.ofHours(2)
@@ -198,6 +211,51 @@ class Sources(
             }
         }
         return Poll(out, now.toString(), skipped = skipped)
+    }
+
+    /**
+     * 제조사 보안 공지(Fortinet·Cisco·Ivanti RSS, Palo Alto JSON). 한 곳이 실패하면 경고로 남기고 나머지를 쓴다. 모두 실패하면 예외.
+     * Palo Alto는 목록에 악용 여부가 없어, 최근 높음·치명 공지 중 [cached]에 없는 것만 공지별 기록을 받는다.
+     */
+    fun vendor(cached: List<Linked<VendorAdvisory>>, now: Instant): Poll<VendorAdvisory> {
+        val out = mutableListOf<Linked<VendorAdvisory>>()
+        val failed = mutableListOf<String>()
+        var skipped = 0
+        fun one(name: String, block: () -> Parsed<Linked<VendorAdvisory>>) {
+            try {
+                val p = block()
+                out += p.items
+                skipped += p.skipped
+            } catch (e: Exception) {
+                failed += "$name: ${e.message}"
+            }
+        }
+        one(VendorParsers.FORTINET) { VendorParsers.fortinet(ok(VENDOR, FORTINET_URL).body) }
+        one(VendorParsers.CISCO) { VendorParsers.cisco(ok(VENDOR, CISCO_URL).body) }
+        one(VendorParsers.IVANTI) { VendorParsers.ivanti(ok(VENDOR, IVANTI_URL).body) }
+        one(VendorParsers.PALO_ALTO) {
+            val list = VendorParsers.paloAltoList(ok(VENDOR, PALO_ALTO_LIST_URL).body)
+            val known = cached.filter { it.value.vendor == VendorParsers.PALO_ALTO }.associateBy { it.url }
+            val recent = now.atZone(ZoneOffset.UTC).toLocalDate().minusDays(PALO_ALTO_RECENT.toDays())
+            var fetched = 0
+            val items = list.items.map { item ->
+                val url = VendorParsers.paloAltoUrl(item.id)
+                val old = known[url]?.value
+                val want = item.date >= recent && item.severity in setOf("CRITICAL", "HIGH") && (old == null || old.date != item.date || old.text.isEmpty())
+                when {
+                    want && fetched < PALO_ALTO_RECORDS_PER_RUN -> {
+                        if (fetched > 0) sleep(Duration.ofSeconds(1))
+                        fetched++
+                        Linked(VendorParsers.paloAltoRecord(item, ok(VENDOR, PALO_ALTO_RECORD_URL + item.id).body), url)
+                    }
+                    old != null && old.date == item.date -> Linked(old, url)
+                    else -> Linked(VendorAdvisory(VendorParsers.PALO_ALTO, item.date, item.title, "", listOf(item.id).filter { it.startsWith("CVE-") }), url)
+                }
+            }
+            Parsed(items, list.skipped)
+        }
+        if (failed.size == 4) throw SourceFetchException(VENDOR, failed.joinToString("; "))
+        return Poll(out, now.toString(), skipped = skipped, warning = failed.joinToString("; ").ifEmpty { null })
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, Charsets.UTF_8)

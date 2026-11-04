@@ -10,7 +10,7 @@ package kestrel.rules
  * 패턴은 느슨하면 크게 틀린다. 예: "PHP"만으로는 WordPress 플러그인의 "PHP Object Injection"까지 잡힌다.
  */
 object ProductCatalog {
-    enum class Category { EDGE, FILE_TRANSFER, COLLAB, RUNTIME, REMOTE }
+    enum class Category { EDGE, FILE_TRANSFER, COLLAB, RUNTIME, REMOTE, INFRA }
 
     data class Group(
         val name: String,
@@ -71,6 +71,13 @@ object ProductCatalog {
         g("BeyondTrust", Category.REMOTE, "BeyondTrust", "BeyondTrust"),
         g("SimpleHelp", Category.REMOTE, "SimpleHelp", "SimpleHelp"),
         g("NCentral", Category.REMOTE, "N-central", "N-able", "N-central"),
+        // v6.3: 대기업 공통 기반(서버 OS 네트워크 기능·AD, 브라우저 제로데이, 개발·배포, 인증). 패턴은 6개월 원자료로 오탐을 줄여 좁혔다
+        g("WindowsServer", Category.INFRA, """\bWindows (SMB|Server Message Block|Remote Desktop|RDP|Kerberos|LDAP|Netlogon|DNS Server|Internet Information Services|TCP/IP|Server Update Service|Routing and Remote Access|Remote Procedure Call|NTLM|Active Directory)|\b(Microsoft|Windows) Active Directory|\bActive Directory (Domain|Federation) Services""", "Microsoft", """Windows|Active Directory|Win32k|SMB|NTLM|Kerberos"""),
+        g("Chrome", Category.INFRA, """Chrome (zero-day|0-day|.{0,40}exploited)|Chromium .{0,30}exploited""", "Google", """Chromium|Chrome"""),
+        g("GitLab", Category.INFRA, """GitLab (CE|EE|Community Edition|Enterprise Edition|has remediated)|^GitLab\b(?! MCP)|\bGitLab (RCE|CVE|Flaw|flaw|Vulnerab|vulnerab|GraphQL|Patch|patch|Fix|fix)|(Critical|critical) GitLab\b|GitLab .{0,20}(Exploit|exploit)""", "GitLab"),
+        g("Jenkins", Category.INFRA, """\bJenkins (\d|LTS|weekly|core)""", "Jenkins"),
+        g("Kubernetes", Category.INFRA, """(issue|vulnerability|flaw) (was )?(discovered|identified|found) in (Kubernetes|ingress-nginx)\b|IngressNightmare|\bKubernetes (kubelet|kube-apiserver)""", "Kubernetes"),
+        g("Okta", Category.INFRA, """\bOkta\b""", "Okta"),
     )
 
     val names: Set<String> = groups.map { it.name }.toSet()
@@ -87,6 +94,7 @@ object ProductCatalog {
         "VMware" to "VMware", "PHPcore" to "PHP", "OpenSSH" to "OpenSSH", "OpenSSL" to "OpenSSL", "Veeam" to "Veeam",
         "NodeJS" to """Node\.?js|노드""", "MikroTik" to "MikroTik|마이크로틱", "Sophos" to "Sophos|소포스", "WatchGuard" to "WatchGuard|워치가드",
         "CrushFTP" to "CrushFTP", "Roundcube" to "Roundcube", "BeyondTrust" to "BeyondTrust", "ScreenConnect" to "ConnectWise|ScreenConnect",
+        "Chrome" to "Google Chrome|Chrome|크롬", "GitLab" to "GitLab|깃랩", "Jenkins" to "Jenkins|젠킨스", "Kubernetes" to "Kubernetes|쿠버네티스", "Okta" to "Okta|옥타",
     ).map { (g, rx) -> g to Regex("""^\(?($rx)(?![A-Za-z0-9])""") }
 
     /** KISA 제목의 제품군: 일반 정규식이 먼저, 안 맞으면 맨 앞 제품명. */

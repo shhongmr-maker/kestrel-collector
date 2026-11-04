@@ -73,9 +73,16 @@ class SignalExtractor(
     private val oldKevDowngrade: Boolean = false,
 ) {
     /** [nvd]는 핵심 제품군 설명에 걸리는 CVE와, 제품군 밖이라도 S1(CVSS 9 이상·원격·무인증·무상호작용)인 CVE다. */
-    fun extract(kev: List<KevEntry>, nvd: List<NvdCve>, kisa: List<KisaPost>, news: List<Article>): List<Signal> {
+    fun extract(kev: List<KevEntry>, nvd: List<NvdCve>, kisa: List<KisaPost>, news: List<Article>, vendor: List<VendorAdvisory> = emptyList()): List<Signal> {
         val alias = kevAlias(kev)
-        return fromKev(kev, alias) + fromNvd(nvd, alias) + fromKisa(kisa) + fromNews(news, alias)
+        return fromKev(kev, alias) + fromNvd(nvd, alias) + fromKisa(kisa) + fromNews(news, alias) + fromVendor(vendor, alias)
+    }
+
+    /** v6.3: 제조사 공지가 실제 악용을 밝히면 S8. 클러스터는 [vendorKey]로 정하고, 정할 수 없으면 버린다. */
+    fun fromVendor(advisories: List<VendorAdvisory>, alias: Map<String, String> = emptyMap()): List<Signal> = advisories.mapNotNull { a ->
+        if (a.date < periodStart.minusDays(7) || a.date > periodEnd || !VendorExploit.of(a)) return@mapNotNull null
+        val key = vendorKey(a, alias) ?: return@mapNotNull null
+        Signal(a.date, key, SignalKind.S8, "[${a.vendor}] ${a.title.takeCodePoints(80)}" + a.cves.take(3).joinToString("") { " $it" })
     }
 
     fun fromKev(entries: List<KevEntry>, alias: Map<String, String> = kevAlias(entries)): List<Signal> = entries.mapNotNull { v ->
@@ -194,6 +201,19 @@ class SignalExtractor(
         private val NAMED_STOP = setOf("PowerShell", "WebShell", "ReverseShell", "BindShell", "OpenShell")
         /** CVE 번호 순서(연도, 일련번호) */
         val CVE_ORDER: Comparator<String> = compareBy({ it.substring(4, 8).toInt() }, { it.substring(9).toInt() })
+
+        /** 제조사 이름 → 그 회사의 핵심 제품군(회사에 제품군이 하나뿐인 경우만). Cisco는 제품군이 일부 제품뿐이라 두지 않는다 */
+        private val VENDOR_GROUP = mapOf("Fortinet" to "Fortinet", "Palo Alto Networks" to "PaloAlto", "Ivanti" to "Ivanti")
+
+        /**
+         * 제조사 공지의 클러스터: 제목의 제품군 → 요약 앞부분의 제품군 → CVE(KEV 묶음이면 그 대표) → 제조사의 제품군.
+         * 제조사가 다른 회사 제품(Node.js·PHP 등)의 영향을 알리는 공지는 제목·요약의 제품군이나 CVE로 묶인다.
+         */
+        fun vendorKey(a: VendorAdvisory, alias: Map<String, String> = emptyMap()): String? =
+            ProductCatalog.groupOfText(a.title)
+                ?: ProductCatalog.groupOfText(a.text.takeCodePoints(400))
+                ?: a.cves.minWithOrNull(CVE_ORDER)?.let { alias[it] ?: it }
+                ?: VENDOR_GROUP[a.vendor]
 
         /**
          * 핵심 제품군 밖 KEV는 같은 벤더·제품·날짜를 한 묶음으로 보고 가장 작은 CVE를 대표 키로 쓴다(v6).

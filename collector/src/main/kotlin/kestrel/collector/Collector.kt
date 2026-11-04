@@ -110,6 +110,8 @@ class Collector(
         val thnPoll = poll(Sources.THN) { sources.thn(since(Sources.THN), now) }
         val bcPoll = poll(Sources.BC) { sources.bc(since(Sources.BC), now) }
         val dsPoll = poll(Sources.DS) { sources.ds(prev.news.map { it.value }, now) }
+        val vendorDue = statuses[Sources.VENDOR]?.lastSuccessAt?.let { Duration.between(it, now) >= Sources.VENDOR_INTERVAL } ?: true
+        val vendorPoll = poll(Sources.VENDOR, vendorDue) { sources.vendor(prev.vendor.map { Linked(it.value, it.url) }, now) }
 
         // KEV는 카탈로그 전체가 오므로, 새로 받았으면 창 안의 항목으로 통째로 바꾼다(삭제된 항목 반영)
         val kev = if (kevPoll != null && !kevPoll.notModified) {
@@ -148,6 +150,11 @@ class Collector(
             .filter { it.value.publishedAt >= windowStart.atStartOfDay(ZoneOffset.UTC).toInstant() }
             .sortedWith(compareBy({ it.value.source }, { it.value.publishedAt }, { it.value.title }))
 
+        // 제조사 공지: 같은 링크면 새로 받은 내용(수정된 공지)으로 바꾸고 처음 본 시각은 둔다
+        val vendor = merge(prev.vendor, vendorPoll?.items, now, replace = true) { _, url -> url }
+            .filter { it.value.date >= windowStart }
+            .sortedWith(compareBy({ it.value.date }, { it.url }))
+
         // 판정
         val alertStart = today.minusDays(alertDays)
         // KISA 공지는 한국 날짜라 UTC 오늘보다 하루 앞설 수 있다(00~09시 KST). 판정 끝을 하루 늦춰 늦지 않게 한다
@@ -158,6 +165,7 @@ class Collector(
             nvd.map { it.value },
             kisa.map { it.value },
             news.map { it.value },
+            vendor.map { it.value },
         )
         val events = AlertEngine(ProductCatalog.names, alertStart, periodEnd).run(signals)
 
@@ -172,7 +180,7 @@ class Collector(
             .sortedWith(compareBy({ it.date }, { it.clusterKey }, { it.level }, { it.trigger }))
         val firstSeenOf = { e: AlertEvent -> notified.firstOrNull { it.sameAs(e) }?.firstSeen ?: now }
 
-        val details = DetailBuilder(kev, nvd, kisa, news)
+        val details = DetailBuilder(kev, nvd, kisa, news, vendor)
         val feedRaw = events.filter { it.date >= today.minusDays(feedDays) }
         /** 먼저 알린 같은 위협이 있으면 관계와 그 이벤트 id를 붙인다 */
         fun related(f: FeedEvent, e: AlertEvent, ev: List<Signal>, history: List<Notified>): FeedEvent =
@@ -191,7 +199,7 @@ class Collector(
             initialized = true,
             rulesVersion = Rules.VERSION,
             sources = statuses.toSortedMap(),
-            kev = kev, nvd = nvd, kisa = kisa, news = news, notified = notified,
+            kev = kev, nvd = nvd, kisa = kisa, news = news, vendor = vendor, notified = notified,
             bodyFailures = failures.toSortedMap(),
             followups = (prev.followups + followups.associate { it.clusterKey to now })
                 .filterValues { Duration.between(it, now) <= Duration.ofDays(feedDays + 1) }.toSortedMap(),
