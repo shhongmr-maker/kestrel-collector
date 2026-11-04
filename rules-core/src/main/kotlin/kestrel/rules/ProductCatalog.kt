@@ -77,7 +77,7 @@ object ProductCatalog {
         g("GitLab", Category.INFRA, """GitLab (CE|EE|Community Edition|Enterprise Edition|has remediated)|^GitLab\b(?! MCP)|\bGitLab (RCE|CVE|Flaw|flaw|Vulnerab|vulnerab|GraphQL|Patch|patch|Fix|fix)|(Critical|critical) GitLab\b|GitLab .{0,20}(Exploit|exploit)""", "GitLab"),
         g("Jenkins", Category.INFRA, """\bJenkins (\d|LTS|weekly|core)""", "Jenkins"),
         g("Kubernetes", Category.INFRA, """(issue|vulnerability|flaw) (was )?(discovered|identified|found) in (Kubernetes|ingress-nginx)\b|IngressNightmare|\bKubernetes (kubelet|kube-apiserver)""", "Kubernetes"),
-        g("Okta", Category.INFRA, """\bOkta\b""", "Okta"),
+        g("Okta", Category.INFRA, """^Okta\b|\bOkta (Workforce|Identity|Verify|Access Gateway|Advanced Server Access|Workflows|Privileged Access|Browser Plugin|Classic Engine|support system)|\bOkta('s)? (breach|hack|hacked|compromise|customers)""", "Okta"),
     )
 
     val names: Set<String> = groups.map { it.name }.toSet()
