@@ -181,7 +181,12 @@ class Collector(
         val firstSeenOf = { e: AlertEvent -> notified.firstOrNull { it.sameAs(e) }?.firstSeen ?: now }
 
         val details = DetailBuilder(kev, nvd, kisa, news, vendor)
-        val feedRaw = events.filter { it.date >= today.minusDays(feedDays) }
+        // feed에 싣는 위협: 최근 [feedDays]일 안에 등급이 생기거나 오른 것, 그리고 등급은 그대로지만 최근 [feedDays]일 안에
+        // 새 소식(기사·KISA·제조사 공지·KEV)이 이어지는 것. 이미 🔴인 사건이 계속 퍼지는 동안 목록에서 빠지지 않게 한다
+        val feedFrom = today.minusDays(feedDays)
+        val lastSignal = signals.groupBy { it.clusterKey }.mapValues { (_, ss) -> ss.maxOf { it.date } }
+        val active = lastSignal.filterValues { it >= feedFrom }.keys
+        val feedRaw = events.filter { it.date >= feedFrom || it.clusterKey in active }
         /** 먼저 알린 같은 위협이 있으면 관계와 그 이벤트 id를 붙인다 */
         fun related(f: FeedEvent, e: AlertEvent, ev: List<Signal>, history: List<Notified>): FeedEvent =
             priorOf(e, cvesOf(e, ev), f.firstSeen, history).let { p -> relationOf(e, p).let { r -> if (r.isEmpty()) f else f.copy(relation = r, ref = idOf(p!!)) } }
@@ -193,7 +198,7 @@ class Collector(
         val toPush = fresh.filterNot { it.level == Level.ORANGE && it.clusterKey in redNow }
         val live = prev.initialized && prev.rulesVersion == Rules.VERSION
         val newAlerts = if (live) toPush.map { e -> evidence(e, signals).let { ev -> related(FeedEvent.of(e, now, ev, details.titles(e, ev)), e, ev, backfilled) } } else emptyList()
-        val followups = if (live) followUps(prev, toPush.map { it.clusterKey }.toSet(), details, feedEvents, today, now) else emptyList()
+        val followups = if (live) followUps(prev, toPush.map { it.clusterKey }.toSet(), details, feedEvents, today, now, active) else emptyList()
 
         val state = CollectorState(
             initialized = true,
@@ -206,7 +211,7 @@ class Collector(
             stats = prev.stats.afterRun(now, newAlerts + followups, statuses.values.count { it.lastAttemptAt == now && it.error != null }),
         )
         val clusters = (feedRaw + newAlertsRaw(live, toPush)).groupBy { it.clusterKey }.mapValues { (key, es) ->
-            details.detail(key, es.minOf { it.date }, es.flatMap { evidence(it, signals) }.distinct())
+            details.detail(key, es.minOf { it.date }, es.flatMap { evidence(it, signals) }.distinct()).copy(lastSignal = lastSignal[key])
         }
         val incidentInfos = details.incidents(
             today.minusDays(feedDays),
@@ -236,9 +241,9 @@ class Collector(
      */
     private fun followUps(
         prev: CollectorState, pushedNow: Set<String>, details: DetailBuilder, feedEvents: List<FeedEvent>,
-        today: java.time.LocalDate, now: Instant,
+        today: java.time.LocalDate, now: Instant, active: Set<String> = emptySet(),
     ): List<FeedEvent> = prev.notified
-        .filter { it.date >= today.minusDays(feedDays) && !it.clusterKey.startsWith("INC:") && !it.clusterKey.startsWith("KISA:") && it.clusterKey !in pushedNow }
+        .filter { (it.date >= today.minusDays(feedDays) || it.clusterKey in active) && !it.clusterKey.startsWith("INC:") && !it.clusterKey.startsWith("KISA:") && it.clusterKey !in pushedNow }
         .groupBy { it.clusterKey }
         .mapNotNull { (key, ns) ->
             val last = prev.followups[key]

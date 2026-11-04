@@ -33,6 +33,8 @@ data class ClusterDetail(
     val kev: List<KevInfo>,
     val ranges: List<CveRange>,
     val docs: List<SourceDoc>,
+    /** 이 클러스터의 마지막 소식(신호) 날짜, UTC. 등급이 그대로여도 기사·공지가 이어지면 늦어진다(v6.3) */
+    val lastSignal: java.time.LocalDate? = null,
 )
 
 data class CvssInfo(val cve: String, val score: Double, val vector: String)

@@ -124,6 +124,7 @@ object Json {
             fo("clusters") {
                 for ((k, c) in feed.clusters.toSortedMap()) fo(k) {
                     f("category", c.category); f("product", c.product)
+                    c.lastSignal?.let { f("lastSignal", it) }
                     fa("cves") { c.cves.forEach { v(it) } }
                     key("cvss"); c.cvss?.let { x -> obj { f("cve", x.cve); f("score", x.score); f("vector", x.vector) } } ?: v(null)
                     fa("kev") {
