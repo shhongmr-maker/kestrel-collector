@@ -164,7 +164,9 @@ class SignalExtractor(
             }
         }
 
-        out += Incidents.find(tagged.filter { !it.korean && it.group == null && Incidents.isIncident(it.article.title) }.map { it.article })
+        val foreignIncidents = tagged.filter { !it.korean && it.group == null && Incidents.isIncident(it.article.title) }.map { it.article }
+        out += Incidents.find(foreignIncidents)
+        out += Incidents.findSupply(foreignIncidents)
         out += Incidents.findKorean(articles.filter { it.source == UrgentText.KOREAN_SOURCE })
         return out
     }
@@ -301,6 +303,60 @@ object Incidents {
         "^(\\[[^\\]]{1,10}\\]\\s*)*[‘“\"']?(美|日|中|英|獨|佛|濠|브라질|미국|일본|중국|대만|홍콩|영국|프랑스|독일|호주|인도|베트남|러시아|이란|캐나다|싱가포르|네덜란드|유럽|태국|필리핀|인도네시아|말레이시아|멕시코|스페인|이탈리아|스웨덴|이스라엘|우크라이나|튀르키예|터키|사우디|덴마크|노르웨이|핀란드|폴란드|벨기에|스위스|오스트리아|아일랜드|포르투갈|그리스|체코|헝가리|루마니아|뉴질랜드|아르헨티나|칠레|콜롬비아|페루|남아공|나이지리아|이집트|파키스탄|몽골|카자흐스탄|글로벌|해외)",
     )
     private val NOT_FACT_KO = Regex("단정|연관성 (확인 안|없)|사실무근|해킹 (아냐|아니)")
+    // v6.4: 해외 기관 사고를 다룬 한국어 기사(제목에 나라 이름이 없는 경우). 제목·본문 앞부분의 해외 단서가 국내 단서보다 많으면 해외로 본다
+    private val FOREIGN_CUE_KO = Regex(
+        "달러|외신|현지 ?시각|현지시간|\\bSEC\\b|8-K|미국|영국|일본|유럽|캐나다|호주|독일|프랑스|러시아|해외 (기업|업체|기관)|Have I Been Pwned|" +
+            "샤이니헌터스|ShinyHunters|스캐터드|블리핑컴퓨터|BleepingComputer|로이터|Reuters|美|英|日",
+    )
+    private val DOMESTIC_CUE_KO = Regex(
+        "개인정보위|개인정보보호위원회|KISA|한국인터넷진흥원|과기정통부|과학기술정보통신부|금감원|금융감독원|금융위|경찰청|주민등록번호|주민번호|국정원|행안부|교육부|국내|" +
+            "[0-9][0-9,.]*\\s*(만|억|천)?\\s*원(?![가-힣])",
+    )
+
+    /** 해외 기관 사고를 다룬 한국어 기사인가: 해외 단서가 있고 국내 단서가 없거나, 해외 단서가 둘 이상이고 더 많다 */
+    fun foreignKorean(title: String, text: String): Boolean {
+        val t = title + " " + text.takeCodePoints(600)
+        val f = FOREIGN_CUE_KO.findAll(t).count()
+        val d = DOMESTIC_CUE_KO.findAll(t).count()
+        return (f >= 1 && d == 0) || (f >= 2 && f > d)
+    }
+
+    // v6.4 공급망 침해(S7S): 확장 프로그램·패키지·자동 업데이트·설치 파일·SDK 탈취. 취약점(flaw)·정책·가정형 기사는 뺀다
+    private val SUPPLY_THING = Regex(
+        """\b(extensions?|packages?|npm|PyPI|crates?\.io|NuGet|RubyGems|Docker (images?|Hub)|VS ?Code|Visual Studio Code|plugins?|add-?ons?|SDKs?|""" +
+            """librar(y|ies)|auto-?updat(e|er|es)|update (server|mechanism)|installers?|GitHub Actions?|CI/CD|build (system|pipeline)|supply[- ]chain)\b""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val SUPPLY_VERB = Regex("""\b(compromised?|hijack(ed|s)?|backdoor(ed|s)?|trojani[sz]ed|malicious (versions?|updates?|releases?)|poisoned|tampered)\b""", RegexOption.IGNORE_CASE)
+    private val SUPPLY_NOT = Regex(
+        """\b(flaws?|vulnerabilit(y|ies)|bugs?|CVE-|patch(es|ed)?|fix(es|ed)?|adds?|launch(es)?|introduces?|how|why|what|guide|webinar|recap|could|can|may|might|would|study|report finds)\b|ThreatsDay|Weekly""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val SUPPLY_GENERIC = (
+        "Official Popular Compromised Malicious Attackers Two Three Mini Fake Rogue Hijacked Backdoored Trojanized Poisoned " +
+            "Tampered Release Releases Version Versions Update Updates Drops Pushes Delivers Deliver Deploys Deploy Run Runs Spread " +
+            "Over Account Accounts Developer Developers Code Credential Credentials Credential-Stealing Backdoor Stealer Infostealer"
+        ).split(' ').toSet()
+    private val SUPPLY_WORD = Regex("""[A-Za-z][A-Za-z0-9&'.-]{2,}""")
+
+    /** 공급망 침해 기사의 묶음 이름: 제목 앞쪽의 제품·회사 이름(흔한 낱말·동사 제외). 없으면 null */
+    fun supplyKey(title: String): String? {
+        for (m in SUPPLY_WORD.findAll(title)) {
+            val w = m.value.trimEnd('.', '\'')
+            if (w.length < 3 || w in STOP || w in SUPPLY_GENERIC) continue
+            if (w[0].isUpperCase() || w.drop(1).any { it.isUpperCase() } || '-' in w || '.' in w) return w
+        }
+        return null
+    }
+
+    fun isSupply(title: String): Boolean = SUPPLY_THING.containsMatchIn(title) && SUPPLY_VERB.containsMatchIn(title) && !SUPPLY_NOT.containsMatchIn(title)
+
+    /** [incidents]: 해외 침해사고 기사(입력 순서 유지). 공급망 침해면 한 건이어도 S7S */
+    fun findSupply(incidents: List<Article>): List<Signal> = incidents.mapNotNull { a ->
+        if (!isSupply(a.title)) return@mapNotNull null
+        val k = supplyKey(a.title) ?: return@mapNotNull null
+        Signal(a.day(), "INC:$k", SignalKind.S7S, "[${a.source}] ${a.title.takeCodePoints(90)}")
+    }
     private val SEVERE_KO = Regex(
         "은행|카드|생명|보험|증권|저축은행|캐피탈|금융|텔레콤|통신사|\\bKT\\b|SKT|LG ?U\\+|유심|USIM|" +
             "\\d[\\d,.]*\\s?만\\s?(명|건)|\\d{1,3}(,\\d{3}){2,}|억\\s?건|부처|정부24|국세청|건강보험|병원",
@@ -354,10 +410,10 @@ object Incidents {
         return if (w.codePointCount(0, w.length) >= 2) w else ""
     }
 
-    /** 국내 침해사고 기사면 기관 이름, 아니면 null. */
-    fun koreanIncident(title: String): String? {
+    /** 국내 침해사고 기사면 기관 이름, 아니면 null. [text]는 본문 앞부분(해외 기관 사고를 거르는 데 쓴다, v6.4) */
+    fun koreanIncident(title: String, text: String = ""): String? {
         if (!INC_KO.containsMatchIn(title) || !ACTUAL_KO.containsMatchIn(title) || NOT_INC_KO.containsMatchIn(title)) return null
-        if (FOREIGN_KO.containsMatchIn(title) || NOT_FACT_KO.containsMatchIn(title)) return null
+        if (FOREIGN_KO.containsMatchIn(title) || NOT_FACT_KO.containsMatchIn(title) || foreignKorean(title, text)) return null
         val e = koreanEntity(title)
         // 일반 명사(국내·금융권·AI 등)는 한 글자 조사를 뗀 형태도 본다("AI가")
         if (e.isEmpty() || e in KO_GENERIC || KO_PARTICLE1.replace(e, "") in KO_GENERIC || KO_BAD_START.containsMatchIn(e)) return null
@@ -368,7 +424,7 @@ object Incidents {
 
     /** [korean]: 한국어 매체 기사(입력 순서 유지). */
     fun findKorean(korean: List<Article>): List<Signal> = korean.mapNotNull { a ->
-        val e = koreanIncident(a.title) ?: return@mapNotNull null
+        val e = koreanIncident(a.title, a.text) ?: return@mapNotNull null
         Signal(a.day(), "INC:$e", if (isSevereKorean(a.title)) SignalKind.S7K_MAJOR else SignalKind.S7K, "[${a.source}] ${a.title.takeCodePoints(90)}")
     }
 }

@@ -35,7 +35,47 @@ data class ClusterDetail(
     val docs: List<SourceDoc>,
     /** 이 클러스터의 마지막 소식(신호) 날짜, UTC. 등급이 그대로여도 기사·공지가 이어지면 늦어진다(v6.3) */
     val lastSignal: java.time.LocalDate? = null,
+    /** 같은 사건을 다룬 다른 클러스터(보호나라 공지 ↔ 침해사고 보도, v6.4). 앱은 공지 카드 하나로 보인다 */
+    val related: List<String> = emptyList(),
 )
+
+/**
+ * 같은 사건을 다룬 보호나라 공지와 침해사고 보도를 잇는다(v6.4). 공지 제목의 영문 제품·회사 이름(4자 이상, 대문자로 시작)이
+ * 침해사고 기사 제목에 나오고, 두 클러스터의 첫 날짜가 3일 안이면 같은 사건으로 본다. 예: "Synology NAS 대상 랜섬웨어 공격 주의 권고"와
+ * "Synology warns of C3RB3R ransomware attacks targeting NAS devices"
+ */
+object RelatedClusters {
+    private val NAME = Regex("""\b[A-Z][A-Za-z0-9]{3,}\b""")
+    private val STOP = setOf("KISA", "Microsoft", "Google", "Apple", "Windows", "Android", "Linux", "Chrome")
+
+    fun link(clusters: Map<String, ClusterDetail>, firstDate: Map<String, LocalDate>): Map<String, ClusterDetail> {
+        val kisa = clusters.filterKeys { it.startsWith("KISA:") }
+        val inc = clusters.filterKeys { it.startsWith("INC:") }
+        val pairs = mutableListOf<Pair<String, String>>()
+        for ((kk, kc) in kisa) {
+            val names = kc.docs.filter { it.kind == "kisa" }.flatMap { d -> NAME.findAll(d.title).map { it.value } }.filter { it !in STOP }.toSet()
+            if (names.isEmpty()) continue
+            for ((ik, ic) in inc) {
+                val a = firstDate[kk] ?: continue
+                val b = firstDate[ik] ?: continue
+                if (kotlin.math.abs(java.time.temporal.ChronoUnit.DAYS.between(a, b)) > 3) continue
+                val titles = ic.docs.filter { it.kind == "news" }.joinToString(" ") { it.title }
+                if (names.any { n -> Regex("""\b${Regex.escape(n)}\b""", RegexOption.IGNORE_CASE).containsMatchIn(titles) }) pairs += kk to ik
+            }
+        }
+        if (pairs.isEmpty()) return clusters
+        val out = clusters.toMutableMap()
+        for ((kk, ik) in pairs) {
+            val kc = out.getValue(kk)
+            val ic = out.getValue(ik)
+            // 공지 카드에 보도 기사도 원문으로 붙인다(앱은 공지 카드 하나만 보인다)
+            val news = ic.docs.filter { it.kind == "news" && kc.docs.none { d -> d.url == it.url } }
+            out[kk] = kc.copy(related = (kc.related + ik).distinct(), docs = (kc.docs + news).take(DetailBuilder.MAX_DOCS))
+            out[ik] = ic.copy(related = (ic.related + kk).distinct())
+        }
+        return out
+    }
+}
 
 data class CvssInfo(val cve: String, val score: Double, val vector: String)
 

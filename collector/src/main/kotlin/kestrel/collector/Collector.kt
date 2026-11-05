@@ -210,9 +210,13 @@ class Collector(
                 .filterValues { Duration.between(it, now) <= Duration.ofDays(feedDays + 1) }.toSortedMap(),
             stats = prev.stats.afterRun(now, newAlerts + followups, statuses.values.count { it.lastAttemptAt == now && it.error != null }),
         )
-        val clusters = (feedRaw + newAlertsRaw(live, toPush)).groupBy { it.clusterKey }.mapValues { (key, es) ->
-            details.detail(key, es.minOf { it.date }, es.flatMap { evidence(it, signals) }.distinct()).copy(lastSignal = lastSignal[key])
-        }
+        val clusterEvents = (feedRaw + newAlertsRaw(live, toPush)).groupBy { it.clusterKey }
+        val clusters = RelatedClusters.link(
+            clusterEvents.mapValues { (key, es) ->
+                details.detail(key, es.minOf { it.date }, es.flatMap { evidence(it, signals) }.distinct()).copy(lastSignal = lastSignal[key])
+            },
+            clusterEvents.mapValues { (_, es) -> es.minOf { it.date } },
+        )
         val incidentInfos = details.incidents(
             today.minusDays(feedDays),
             feedRaw.filter { it.clusterKey.startsWith("INC:") }.groupBy { it.clusterKey }.mapValues { (_, es) -> es.maxOf { it.level }.name },

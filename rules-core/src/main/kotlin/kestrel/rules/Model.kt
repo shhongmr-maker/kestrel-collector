@@ -18,7 +18,8 @@ enum class SignalKind(val code: String) {
     S7("S7"),                     // 해외 침해사고 보도(두 매체)
     S7K("S7K"),                   // 국내 침해사고 보도(v6, 한국 매체)
     S7K_MAJOR("S7K_MAJOR"),       // 국내 침해사고 중 금융·통신·공공·대규모(v6)
-    S8("S8");                     // 제조사 보안 공지가 실제 악용을 밝힘(v6.3)
+    S8("S8"),                     // 제조사 보안 공지가 실제 악용을 밝힘(v6.3)
+    S7S("S7S");                   // 공급망 침해(확장·패키지·자동 업데이트·설치 파일 탈취) 보도 한 건(v6.4)
 
     companion object {
         private val byCode = entries.associateBy { it.code }
