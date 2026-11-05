@@ -348,7 +348,9 @@ object Incidents {
             "Tampered Release Releases Version Versions Update Updates Drops Pushes Delivers Deliver Deploys Deploy Run Runs Spread " +
             "Over Account Accounts Developer Developers Code Credential Credentials Credential-Stealing Backdoor Stealer Infostealer " +
             // v6.6: 문구 확장으로 앞에 오는 흔한 낱말
-            "Use Uses Employ Employs Drop Hit Hits Massive New Worm Attack Attacks Malware Hackers Researchers Malcious"
+            "Use Uses Employ Employs Drop Hit Hits Massive New Worm Attack Attacks Malware Hackers Researchers Malcious " +
+            // v6.6.1: 공급망 대상 낱말 자체는 이름이 아니다("Backdoored Docker Image for ARTEX"의 이름은 ARTEX)
+            "Docker Image Images Container Containers Extension Extensions Package Packages Plugin Plugins"
         ).split(' ').toSet()
     /** v6.6: "Keyv-Linked", "China-Linked"의 "-Linked"는 떼고, 나라 이름이면 이름으로 쓰지 않는다 */
     private val SUPPLY_LINKED = Regex("""-(Linked|linked|Backed|backed|Nexus|nexus)$""")
