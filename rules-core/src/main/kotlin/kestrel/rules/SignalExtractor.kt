@@ -166,7 +166,8 @@ class SignalExtractor(
 
         val foreignIncidents = tagged.filter { !it.korean && it.group == null && Incidents.isIncident(it.article.title) }.map { it.article }
         out += Incidents.find(foreignIncidents)
-        out += Incidents.findSupply(foreignIncidents)
+        // v6.6: 공급망 침해는 침해사고 표현 문턱 없이 해외·제품군 밖 기사 전체에서 본다("hijacked"·"trojanizes" 제목이 문턱에 막혔다)
+        out += Incidents.findSupply(tagged.filter { !it.korean && it.group == null }.map { it.article })
         out += Incidents.findKorean(articles.filter { it.source == UrgentText.KOREAN_SOURCE })
         return out
     }
@@ -304,21 +305,25 @@ object Incidents {
     )
     private val NOT_FACT_KO = Regex("단정|연관성 (확인 안|없)|사실무근|해킹 (아냐|아니)")
     // v6.4: 해외 기관 사고를 다룬 한국어 기사(제목에 나라 이름이 없는 경우). 제목·본문 앞부분의 해외 단서가 국내 단서보다 많으면 해외로 본다
+    // v6.5: 나라 이름 뒤에 법인·증시·보안업체 등이 오면 피해 기관이 아니라 출처·상장지라 세지 않는다(쿠팡 美 SEC 공시, 미국 법인)
     private val FOREIGN_CUE_KO = Regex(
-        "달러|외신|현지 ?시각|현지시간|\\bSEC\\b|8-K|미국|영국|일본|유럽|캐나다|호주|독일|프랑스|러시아|해외 (기업|업체|기관)|Have I Been Pwned|" +
-            "샤이니헌터스|ShinyHunters|스캐터드|블리핑컴퓨터|BleepingComputer|로이터|Reuters|美|英|日",
+        "(미국|영국|일본|유럽|캐나다|호주|독일|프랑스|러시아|美|英|日)(?!\\s?(법인|자회사|지사|증시|상장|증권거래위원회|SEC|시장|공시|보안 ?업체|보안 ?기업|사이버보안 ?(업체|기업)|연구진|연구원|당국))|" +
+            "달러|해외 (기업|업체|기관)|글로벌 (기업|플랫폼|업체|체인|편의점|거래소|기관)|Have I Been Pwned|샤이니헌터스|ShinyHunters|스캐터드|블리핑컴퓨터|BleepingComputer",
     )
+    /** 약한 해외 단서: 혼자서는 해외로 보지 않는다(국내 사고를 외신이 다루거나 미국 증시에 공시한 경우) */
+    private val WEAK_FOREIGN_KO = Regex("외신|현지 ?시각|현지시간|\\bSEC\\b|8-K|로이터|Reuters")
     private val DOMESTIC_CUE_KO = Regex(
         "개인정보위|개인정보보호위원회|KISA|한국인터넷진흥원|과기정통부|과학기술정보통신부|금감원|금융감독원|금융위|경찰청|주민등록번호|주민번호|국정원|행안부|교육부|국내|" +
-            "[0-9][0-9,.]*\\s*(만|억|천)?\\s*원(?![가-힣])",
+            "업비트|빗썸|코인원|코빗|고팍스|두나무|[0-9][0-9,.]*\\s*(만|억|천)?\\s*원(?![가-힣])",
     )
 
-    /** 해외 기관 사고를 다룬 한국어 기사인가: 해외 단서가 있고 국내 단서가 없거나, 해외 단서가 둘 이상이고 더 많다 */
+    /** 해외 기관 사고를 다룬 한국어 기사인가: 해외 단서가 있고, 국내 단서가 없거나 해외 단서(약한 것 포함)가 둘 이상이고 더 많다. 같은 단서는 한 번만 센다 */
     fun foreignKorean(title: String, text: String): Boolean {
         val t = title + " " + text.takeCodePoints(600)
-        val f = FOREIGN_CUE_KO.findAll(t).count()
+        val s = FOREIGN_CUE_KO.findAll(t).map { it.value }.toSet().size
+        val w = WEAK_FOREIGN_KO.findAll(t).map { it.value }.toSet().size
         val d = DOMESTIC_CUE_KO.findAll(t).count()
-        return (f >= 1 && d == 0) || (f >= 2 && f > d)
+        return s >= 1 && (d == 0 || (s + w >= 2 && s + w > d))
     }
 
     // v6.4 공급망 침해(S7S): 확장 프로그램·패키지·자동 업데이트·설치 파일·SDK 탈취. 취약점(flaw)·정책·가정형 기사는 뺀다
@@ -327,29 +332,46 @@ object Incidents {
             """librar(y|ies)|auto-?updat(e|er|es)|update (server|mechanism)|installers?|GitHub Actions?|CI/CD|build (system|pipeline)|supply[- ]chain)\b""",
         RegexOption.IGNORE_CASE,
     )
-    private val SUPPLY_VERB = Regex("""\b(compromised?|hijack(ed|s)?|backdoor(ed|s)?|trojani[sz]ed|malicious (versions?|updates?|releases?)|poisoned|tampered)\b""", RegexOption.IGNORE_CASE)
+    // v6.6: hacked·infects·breached도 탈취 동사로, "supply-chain attack/breach" 문구는 그것만으로 공급망 침해로 본다
+    private val SUPPLY_VERB = Regex("""\b(compromis(e|ed|es)|hijack(ed|s)?|backdoor(ed|s)?|trojani[sz](ed|es)|malicious (versions?|updates?|releases?)|poison(ed|s)|tampered|hacked|infect(s|ed)|breach(ed|es)?)\b""", RegexOption.IGNORE_CASE)
+    private val SUPPLY_PHRASE = Regex("""supply[- ]chain (attacks?|hacks?|breach|compromise|campaign)""", RegexOption.IGNORE_CASE)
     private val SUPPLY_NOT = Regex(
-        """\b(flaws?|vulnerabilit(y|ies)|bugs?|CVE-|patch(es|ed)?|fix(es|ed)?|adds?|launch(es)?|introduces?|how|why|what|guide|webinar|recap|could|can|may|might|would|study|report finds)\b|ThreatsDay|Weekly""",
+        // v6.5: "weekly downloads"·"add-on"·"malicious patch"는 막지 않는다. 택배 조회(package tracking)는 공급망이 아니다
+        """\b(flaws?|vulnerabilit(y|ies)|bugs?|CVE-|(?<!malicious )patch(es|ed)?|fix(es|ed)?|adds?(?!-)|launch(es)?|introduces?|how|why|what|guide|webinar|recap|could|can|may|might|would|study|report finds|package (tracking|delivery|shipping)|""" +
+            // v6.6: 수사·정책·대책·연구·가짜·악성 패키지 무더기 업로드(정상 제품 탈취가 아님)
+            """stop|arrests?|arrested|charged|accused|sentenced|extradited|links?|linked to|defen[cs]es?|warning signs|turn to|problem|part of|disrupts?|takedown|risks?|modernize|announces?|tackle|during tests|fake|""" +
+            """(trojanized|malicious) (npm |PyPI |Go |Python |VS Code |Chrome )?(packages|extensions))\b|ThreatsDay|Weekly (Recap|Roundup)""",
         RegexOption.IGNORE_CASE,
     )
     private val SUPPLY_GENERIC = (
         "Official Popular Compromised Malicious Attackers Two Three Mini Fake Rogue Hijacked Backdoored Trojanized Poisoned " +
             "Tampered Release Releases Version Versions Update Updates Drops Pushes Delivers Deliver Deploys Deploy Run Runs Spread " +
-            "Over Account Accounts Developer Developers Code Credential Credentials Credential-Stealing Backdoor Stealer Infostealer"
+            "Over Account Accounts Developer Developers Code Credential Credentials Credential-Stealing Backdoor Stealer Infostealer " +
+            // v6.6: 문구 확장으로 앞에 오는 흔한 낱말
+            "Use Uses Employ Employs Drop Hit Hits Massive New Worm Attack Attacks Malware Hackers Researchers Malcious"
         ).split(' ').toSet()
-    private val SUPPLY_WORD = Regex("""[A-Za-z][A-Za-z0-9&'.-]{2,}""")
+    /** v6.6: "Keyv-Linked", "China-Linked"의 "-Linked"는 떼고, 나라 이름이면 이름으로 쓰지 않는다 */
+    private val SUPPLY_LINKED = Regex("""-(Linked|linked|Backed|backed|Nexus|nexus)$""")
+    private val SUPPLY_ACTOR = setOf("China", "Chinese", "Russia", "Russian", "Iran", "Iranian", "North", "Korea", "Korean")
+    private val SUPPLY_WORD = Regex("""[A-Za-z0-9][A-Za-z0-9&'.+-]{2,}""")
+    /** v6.5: 소문자로 시작하는 패키지 이름은 바로 뒤에 버전이나 npm·package 같은 낱말이 올 때만 이름으로 본다(jscrambler 8.14.0, joyfill npm) */
+    private val SUPPLY_NEXT = Regex("""\s+(v?\d+\.\d[\w.]*|(npm|PyPI|packages?|extensions?|plugins?|SDKs?|librar(y|ies)|crates?)\b)""", RegexOption.IGNORE_CASE)
+    private val SUPPLY_LOWER_STOP = SUPPLY_GENERIC.map { it.lowercase() }.toSet() +
+        "the and its new with via from for over into two all more some these those their legit legitimate open source several many multiple dozens hundreds".split(' ')
 
     /** 공급망 침해 기사의 묶음 이름: 제목 앞쪽의 제품·회사 이름(흔한 낱말·동사 제외). 없으면 null */
     fun supplyKey(title: String): String? {
         for (m in SUPPLY_WORD.findAll(title)) {
-            val w = m.value.trimEnd('.', '\'')
-            if (w.length < 3 || w in STOP || w in SUPPLY_GENERIC) continue
+            val w = m.value.removeSuffix("'s").trimEnd('.', '\'').replace(SUPPLY_LINKED, "")
+            if (w.length < 3 || w in STOP || w in SUPPLY_GENERIC || w in SUPPLY_ACTOR || w.count { it.isLetter() } < 2 || w.lowercase().startsWith("supply")) continue
             if (w[0].isUpperCase() || w.drop(1).any { it.isUpperCase() } || '-' in w || '.' in w) return w
+            if (w.lowercase() !in SUPPLY_LOWER_STOP && SUPPLY_NEXT.find(title, m.range.last + 1)?.range?.first == m.range.last + 1) return w
         }
         return null
     }
 
-    fun isSupply(title: String): Boolean = SUPPLY_THING.containsMatchIn(title) && SUPPLY_VERB.containsMatchIn(title) && !SUPPLY_NOT.containsMatchIn(title)
+    fun isSupply(title: String): Boolean =
+        ((SUPPLY_THING.containsMatchIn(title) && SUPPLY_VERB.containsMatchIn(title)) || SUPPLY_PHRASE.containsMatchIn(title)) && !SUPPLY_NOT.containsMatchIn(title)
 
     /** [incidents]: 해외 침해사고 기사(입력 순서 유지). 공급망 침해면 한 건이어도 S7S */
     fun findSupply(incidents: List<Article>): List<Signal> = incidents.mapNotNull { a ->

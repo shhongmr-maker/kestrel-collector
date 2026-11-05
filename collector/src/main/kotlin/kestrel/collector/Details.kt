@@ -45,22 +45,47 @@ data class ClusterDetail(
  * "Synology warns of C3RB3R ransomware attacks targeting NAS devices"
  */
 object RelatedClusters {
-    private val NAME = Regex("""\b[A-Z][A-Za-z0-9]{3,}\b""")
-    private val STOP = setOf("KISA", "Microsoft", "Google", "Apple", "Windows", "Android", "Linux", "Chrome")
+    /** 공지 제목의 영문 이름: 대문자로 시작하고 하이픈·점으로 이어진 것도 한 이름(D-Link, TP-Link, Node.js). 대소문자를 가려 맞춘다 */
+    private val NAME = Regex("""(?<![A-Za-z0-9.-])[A-Z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*""")
+    /** 큰 회사 이름과 사전 낱말(여러 사건에 두루 나와 같은 사건이라는 근거가 못 됨) */
+    private val STOP = setOf(
+        "KISA", "Microsoft", "Google", "Apple", "Windows", "Android", "Linux", "Chrome", "Samsung", "Cisco", "Oracle", "Amazon", "AWS", "Meta",
+        "Link", "Point", "Trend", "Micro", "Open", "Active", "Directory", "Smart", "Utility", "Server", "Update", "Suite", "Security", "Cloud",
+        "Exchange", "Office", "Service", "Services", "Network", "Manager", "Center", "Portal", "Web", "Mail", "Data", "Software", "System", "Systems",
+        "Edge", "Mobile", "Pro", "Plus", "One", "API", "VPN", "SSL", "IoT", "SW", "AI", "PC", "IT",
+    )
+    /** 같은 사건이라는 두 번째 근거: 공지와 보도가 같은 공격 종류를 다룬다 */
+    private val THEMES = listOf(
+        Regex("랜섬웨어") to Regex("ransomware", RegexOption.IGNORE_CASE),
+        Regex("악성코드|악성 ?파일") to Regex("malware|infostealer|stealer|backdoor|trojan", RegexOption.IGNORE_CASE),
+        Regex("피싱|사칭") to Regex("phishing|impersonat", RegexOption.IGNORE_CASE),
+        Regex("공급망|업데이트 (서버|파일) 변조|설치 파일") to Regex("supply[- ]chain|compromised|hijack|trojaniz", RegexOption.IGNORE_CASE),
+        Regex("취약점|악용") to Regex("flaw|vulnerab|exploit|zero-day|0-day|CVE-", RegexOption.IGNORE_CASE),
+        Regex("디도스|DDoS") to Regex("DDoS", RegexOption.IGNORE_CASE),
+        Regex("유출|해킹|침해") to Regex("breach|leak|hack|stolen|exposed", RegexOption.IGNORE_CASE),
+    )
+
+    /** 공지 제목과 보도 제목이 같은 사건인가: 영문 이름이 하나 이상 같고, 이름이 둘 이상 같거나 공격 종류가 같다 */
+    fun sameEvent(kisaTitle: String, newsTitles: String): Boolean {
+        val names = NAME.findAll(kisaTitle).map { it.value }.filter { it.length >= 3 && it !in STOP }.toSet()
+        val shared = names.filter { n -> Regex("""(?<![A-Za-z0-9])${Regex.escape(n)}(?![A-Za-z0-9])""").containsMatchIn(newsTitles) }
+        if (shared.isEmpty()) return false
+        return shared.size >= 2 || THEMES.any { (ko, en) -> ko.containsMatchIn(kisaTitle) && en.containsMatchIn(newsTitles) }
+    }
 
     fun link(clusters: Map<String, ClusterDetail>, firstDate: Map<String, LocalDate>): Map<String, ClusterDetail> {
         val kisa = clusters.filterKeys { it.startsWith("KISA:") }
         val inc = clusters.filterKeys { it.startsWith("INC:") }
         val pairs = mutableListOf<Pair<String, String>>()
         for ((kk, kc) in kisa) {
-            val names = kc.docs.filter { it.kind == "kisa" }.flatMap { d -> NAME.findAll(d.title).map { it.value } }.filter { it !in STOP }.toSet()
-            if (names.isEmpty()) continue
+            val kisaTitles = kc.docs.filter { it.kind == "kisa" }.map { it.title }
+            if (kisaTitles.isEmpty()) continue
             for ((ik, ic) in inc) {
                 val a = firstDate[kk] ?: continue
                 val b = firstDate[ik] ?: continue
                 if (kotlin.math.abs(java.time.temporal.ChronoUnit.DAYS.between(a, b)) > 3) continue
                 val titles = ic.docs.filter { it.kind == "news" }.joinToString(" ") { it.title }
-                if (names.any { n -> Regex("""\b${Regex.escape(n)}\b""", RegexOption.IGNORE_CASE).containsMatchIn(titles) }) pairs += kk to ik
+                if (kisaTitles.any { sameEvent(it, titles) }) pairs += kk to ik
             }
         }
         if (pairs.isEmpty()) return clusters
@@ -68,9 +93,11 @@ object RelatedClusters {
         for ((kk, ik) in pairs) {
             val kc = out.getValue(kk)
             val ic = out.getValue(ik)
-            // 공지 카드에 보도 기사도 원문으로 붙인다(앱은 공지 카드 하나만 보인다)
+            // 공지 카드에 보도 기사도 원문으로 붙인다(앱은 공지 카드 하나로 보일 수 있다). 자리가 없어 기사를 하나도 못 붙이면 잇지 않는다
             val news = ic.docs.filter { it.kind == "news" && kc.docs.none { d -> d.url == it.url } }
-            out[kk] = kc.copy(related = (kc.related + ik).distinct(), docs = (kc.docs + news).take(DetailBuilder.MAX_DOCS))
+            val room = DetailBuilder.MAX_DOCS - kc.docs.size
+            if (room <= 0 && news.isNotEmpty()) continue
+            out[kk] = kc.copy(related = (kc.related + ik).distinct(), docs = kc.docs + news.take(room.coerceAtLeast(0)))
             out[ik] = ic.copy(related = (ic.related + kk).distinct())
         }
         return out
@@ -266,7 +293,7 @@ class DetailBuilder(
                 group != null -> ProductCatalog.groupOfText(a.value.title) == group
                 CVE.matches(key) -> key in a.value.title || key in a.value.text
                 key.startsWith("INC:") -> key.removePrefix("INC:").let { k ->
-                    k in Incidents.tokens(a.value.title) || Incidents.koreanIncident(a.value.title) == k || Incidents.supplyKey(a.value.title) == k
+                    k in Incidents.tokens(a.value.title) || Incidents.koreanIncident(a.value.title, a.value.text) == k || Incidents.supplyKey(a.value.title) == k
                 }
                 else -> false
             }
@@ -385,7 +412,7 @@ class DetailBuilder(
             val level = shared.mapNotNull { levels["INC:$it"] }.maxByOrNull { if (it == "RED") 1 else 0 }.orEmpty()
             info("INC:" + (shared.sorted().firstOrNull() ?: g.first().value.title.clip(30)), level, g)
         }
-        val koreanInfo = korean.mapNotNull { a -> Incidents.koreanIncident(a.value.title)?.let { it to a } }
+        val koreanInfo = korean.mapNotNull { a -> Incidents.koreanIncident(a.value.title, a.value.text)?.let { it to a } }
             .groupBy({ it.first }, { it.second })
             .map { (entity, g) -> info("INC:$entity", levels["INC:$entity"].orEmpty(), g) }
         return (foreignInfo + koreanInfo).sortedByDescending { it.firstReported }.take(MAX_INCIDENTS)
