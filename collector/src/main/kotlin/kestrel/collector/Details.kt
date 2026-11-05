@@ -155,7 +155,7 @@ class DetailBuilder(
         /** S8 근거 끝에 붙은 CVE 목록 */
         private val CVE_TAIL = Regex("""( CVE-\d{4}-\d{4,7})+$""")
         private val KST = ZoneOffset.ofHours(9)
-        private val INCIDENT_KINDS = setOf(SignalKind.S7, SignalKind.S7K, SignalKind.S7K_MAJOR)
+        private val INCIDENT_KINDS = setOf(SignalKind.S7, SignalKind.S7S, SignalKind.S7K, SignalKind.S7K_MAJOR)
         private val KEV_KINDS = setOf(SignalKind.KEV_S6, SignalKind.KEV_S6_OLD, SignalKind.KEV_OTHER)
 
         /** 제품군 이름(ProductCatalog)의 표시 이름. */
@@ -265,7 +265,9 @@ class DetailBuilder(
             day(a.value.publishedAt) >= from && when {
                 group != null -> ProductCatalog.groupOfText(a.value.title) == group
                 CVE.matches(key) -> key in a.value.title || key in a.value.text
-                key.startsWith("INC:") -> key.removePrefix("INC:").let { k -> k in Incidents.tokens(a.value.title) || Incidents.koreanIncident(a.value.title) == k }
+                key.startsWith("INC:") -> key.removePrefix("INC:").let { k ->
+                    k in Incidents.tokens(a.value.title) || Incidents.koreanIncident(a.value.title) == k || Incidents.supplyKey(a.value.title) == k
+                }
                 else -> false
             }
         }.sortedBy { it.value.publishedAt }
@@ -286,7 +288,9 @@ class DetailBuilder(
                     (CVE.matches(key) && key in p.value.body)
                 )
         }
-        val newsHits = newsOf(key, from)
+        // 공급망 침해(S7S)만으로 묶인 클러스터는 이름이 흔한 제품명(예: Claude)일 수 있어, 공급망 침해 기사만 싣는다
+        val supplyOnly = evidence.isNotEmpty() && evidence.all { it.kind == SignalKind.S7S }
+        val newsHits = newsOf(key, from).filter { !supplyOnly || Incidents.isSupply(it.value.title) }
         // 제조사 공지: 이 클러스터로 묶이는 실제 악용 공지와, 근거에 나온 CVE를 다룬 공지(같은 업체의 무관한 공지는 싣지 않는다)
         val evidenceCves = (listOf(key) + evidence.map { it.detail }).flatMap { t -> CVE.findAll(t).map { it.value } }.toSet()
         val vendorHits = vendor.filter { v ->
