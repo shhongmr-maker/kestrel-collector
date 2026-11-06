@@ -4,6 +4,7 @@ import kestrel.rules.Article
 import kestrel.rules.CvssRule
 import kestrel.rules.KevEntry
 import kestrel.rules.KisaPost
+import kestrel.rules.NewsTopics
 import kestrel.rules.NvdCve
 import kestrel.rules.ProductCatalog
 import kestrel.rules.SignalKind
@@ -40,7 +41,9 @@ class Sources(
         const val BC = "bc"
         const val DS = "ds"
         const val VENDOR = "vendor"
-        val ALL = listOf(KEV, NVD, KISA, THN, BC, DS, VENDOR)
+        /** GeekNews: 뉴스 탭 전용(보안·AI 소식), 알림 판정에는 쓰지 않는다 */
+        const val GN = "gn"
+        val ALL = listOf(KEV, NVD, KISA, THN, BC, DS, VENDOR, GN)
 
         const val KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
         const val NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
@@ -48,6 +51,7 @@ class Sources(
         const val THN_URL = "https://thehackernews.com/feeds/posts/default"
         const val BC_URL = "https://www.bleepingcomputer.com/news/security/"
         const val DS_URL = "https://www.dailysecu.com/rss/allArticle.xml"
+        const val GN_URL = "https://news.hada.io/rss/news"
         const val FORTINET_URL = "https://filestore.fortinet.com/fortiguard/rss/ir.xml"
         const val CISCO_URL = "https://sec.cloudapps.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml"
         const val IVANTI_URL = "https://www.ivanti.com/blog/topics/security-advisory/rss"
@@ -142,6 +146,18 @@ class Sources(
         return Poll(
             parsed.items, now.toString(), skipped = parsed.skipped,
             warning = if (gap) "RSS 범위 밖으로 빠진 기사가 있을 수 있음 ($newestCached ~ $oldestFetched)" else null,
+        )
+    }
+
+    /** GeekNews Atom(최근 20건). 보안·AI 주제만 남긴다. 캐시의 마지막 글보다 오래된 글이 없으면 사이에 빠진 글이 있을 수 있다 */
+    fun gn(cached: List<Article>, now: Instant): Poll<Article> {
+        val parsed = GeekNewsAtomParser.parse(ok(GN, GN_URL).body)
+        val newestCached = cached.filter { it.source == GeekNewsAtomParser.SOURCE_CODE }.maxOfOrNull { it.publishedAt }
+        val oldestFetched = parsed.items.minOfOrNull { it.value.publishedAt }
+        val gap = newestCached != null && oldestFetched != null && oldestFetched > newestCached
+        return Poll(
+            parsed.items.filter { NewsTopics.geekTopic(it.value.title) != NewsTopics.Topic.OTHER }, now.toString(), skipped = parsed.skipped,
+            warning = if (gap) "RSS 범위 밖으로 빠진 글이 있을 수 있음 ($newestCached ~ $oldestFetched)" else null,
         )
     }
 

@@ -18,6 +18,8 @@ object NewsTopics {
         BREACH("breach", "유출·침해"),
         THREAT("threat", "위협 동향·APT"),
         VULN("vuln", "취약점·패치"),
+        /** 보안과 관련 없는 AI 소식(모델·도구·정책 동향). 주로 GeekNews에서 온다 */
+        AI_TREND("ai-trend", "AI 동향"),
         OTHER("other", "기타");
 
         companion object { fun of(id: String) = entries.firstOrNull { it.id == id } ?: OTHER }
@@ -73,7 +75,9 @@ object NewsTopics {
     private val POLICY = rx("sanction|제재|arrest|체포|검거|기소|charged|indicted|sentenced|선고|징역|extradit|송환|seiz|압수|police|인터폴|Interpol|소탕|months in prison|years in prison|gets \\d+ (months|years)|takedown|dismantl|disrupt|해체|수사|경찰|FBI|Europol|CISA (order|directive)|법안|규제|과징금|fine[sd]?$R|regulation|${L}law$R|정책|의무화|가이드라인")
     private val BREACH = rx("breach|leak|exposed|exposure|stolen|hacked|compromised|intrusion|thefts?$R|유출|해킹|침해|탈취|노출|도난")
     private val THREAT = rx("${L}APT$R|state-sponsored|nation-state|국가 배후|해킹 그룹|hacking group|threat actors?|campaign|캠페인|espionage|첩보|spying|cyberattack|사이버 ?공격|해커 ?조직|해킹 ?조직|공격 그룹|DDoS|디도스|Lazarus|라자루스|김수키|Kimsuky")
-    private val VULN = rx("vulnerab|flaws?|${L}bugs?$R|${L}CVE-|zero-day|0-day|제로데이|취약점|patch|패치|보안 업데이트|security update|exploit|${L}RCE$R")
+    private val VULN = rx("vulnerab|flaws?|${L}bugs?$R|${L}CVE-|zero-day|0-day|제로데이|취약점|patch|패치|보안 업데이트|security update|exploit|${L}RCE$R|" +
+        // GeekNews 등 일반 기술 매체가 쓰는 표현("심각한 보안 문제 우회 조치")
+        "보안 ?(문제|결함|수정|이슈|버그|구멍)|security (issue|fix|bug|problem|hole)s?")
 
     /** AI 보안 기사인가: 제목에 AI 낱말·AI 제품 이름과 보안 낱말이 함께 있다. [text]는 호환을 위해 받지만 보지 않는다 */
     @Suppress("UNUSED_PARAMETER")
@@ -93,6 +97,24 @@ object NewsTopics {
             ATTACK.containsMatchIn(s) -> AiKind.ATTACK
             POLICY_AI.containsMatchIn(s) -> AiKind.POLICY
             else -> AiKind.GENERAL
+        }
+    }
+
+    /** 제목에 AI 낱말·AI 제품 이름이 있는가(보안과 상관없이) */
+    fun mentionsAi(title: String): Boolean = AI_WORDS.containsMatchIn(title) || AI_PRODUCT.containsMatchIn(title)
+
+    /**
+     * GeekNews(개발·기술 뉴스 큐레이션) 기사의 주제. 보안 주제와 AI 소식만 뉴스 탭에 싣고 나머지는 [Topic.OTHER](버림).
+     * 요약문에는 보안과 무관한 "패치·정책" 같은 낱말이 흔해 제목만 본다. AI 제품 출시 소식은 업계 소식으로 버리지 않고 AI 동향으로 둔다
+     */
+    fun geekTopic(title: String): Topic {
+        val t = topic(title)
+        return when {
+            // AI와 보안 낱말이 함께 있으면 업계 소식 낱말("매출" 등)이 있어도 AI 보안
+            isAi(title) -> Topic.AI
+            t != Topic.OTHER && t != Topic.INDUSTRY -> t
+            mentionsAi(title) -> Topic.AI_TREND
+            else -> Topic.OTHER
         }
     }
 

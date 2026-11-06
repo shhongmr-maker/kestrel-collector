@@ -154,6 +154,8 @@ class DetailBuilder(
     private val news: List<Seen<Article>>,
     /** 제조사 보안 공지(v6.3) */
     private val vendor: List<Seen<VendorAdvisory>> = emptyList(),
+    /** 뉴스 탭에 싣는 기사(판정·위협 원문에 쓰지 않는 GeekNews 포함). 없으면 [news] */
+    private val tabNews: List<Seen<Article>> = news,
 ) {
     companion object {
         const val MAX_DOCS = 10
@@ -454,18 +456,20 @@ class DetailBuilder(
      * 같은 이야기를 다룬 매체 수는 48시간 안에 고유명사가 겹치는 다른 매체 기사로 센다.
      */
     fun news(since: LocalDate, exclude: Set<String>): List<NewsItem> {
-        val recent = news.filter { day(it.value.publishedAt) >= since }
+        val recent = tabNews.filter { day(it.value.publishedAt) >= since }
         val tokens = recent.associate { it.url to (Incidents.tokens(it.value.title) - STORY_STOP) }
         return recent.filter { it.url !in exclude }.map { a ->
             val mine = tokens[a.url].orEmpty()
+            // GeekNews는 다른 매체 기사를 다시 소개하므로 "여러 매체 보도"에 세지 않는다
             val sameStory = recent.filter { b ->
-                b.value.source != a.value.source && Duration.between(b.value.publishedAt, a.value.publishedAt).abs() <= Duration.ofHours(48) &&
+                b.value.source != a.value.source && b.value.source != GeekNewsAtomParser.SOURCE_CODE &&
+                    Duration.between(b.value.publishedAt, a.value.publishedAt).abs() <= Duration.ofHours(48) &&
                     (tokens[b.url].orEmpty() intersect mine).isNotEmpty()
             }.map { it.value.source }.toSet()
-            val topic = NewsTopics.topic(a.value.title, a.value.text)
+            val topic = if (a.value.source == GeekNewsAtomParser.SOURCE_CODE) NewsTopics.geekTopic(a.value.title) else NewsTopics.topic(a.value.title, a.value.text)
             val ai = NewsTopics.aiKind(a.value.title, a.value.text)
             // 업계 소식(칼럼·출시·행사 등)은 주요로 올리지 않는다
-            val major = topic != NewsTopics.Topic.INDUSTRY && (UrgentText.isUrgent(a.value) || sameStory.isNotEmpty() ||
+            val major = topic != NewsTopics.Topic.INDUSTRY && topic != NewsTopics.Topic.AI_TREND && (UrgentText.isUrgent(a.value) || sameStory.isNotEmpty() ||
                 ai in setOf(NewsTopics.AiKind.SUPPLY, NewsTopics.AiKind.SERVICE, NewsTopics.AiKind.ATTACK))
             NewsItem(a.value.publishedAt, a.value.source, a.value.title.clip(200), a.url, topic.id, ai?.id.orEmpty(), major, 1 + sameStory.size)
         }.sortedWith(compareByDescending<NewsItem> { it.at }.thenBy { it.title }).take(MAX_NEWS)

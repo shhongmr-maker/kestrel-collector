@@ -110,6 +110,7 @@ class Collector(
         val thnPoll = poll(Sources.THN) { sources.thn(since(Sources.THN), now) }
         val bcPoll = poll(Sources.BC) { sources.bc(since(Sources.BC), now) }
         val dsPoll = poll(Sources.DS) { sources.ds(prev.news.map { it.value }, now) }
+        val gnPoll = poll(Sources.GN) { sources.gn(prev.news.map { it.value }, now) }
         val vendorDue = statuses[Sources.VENDOR]?.lastSuccessAt?.let { Duration.between(it, now) >= Sources.VENDOR_INTERVAL } ?: true
         val vendorPoll = poll(Sources.VENDOR, vendorDue) { sources.vendor(prev.vendor.map { Linked(it.value, it.url) }, now) }
 
@@ -144,9 +145,9 @@ class Collector(
             }
         }
         // 판정은 본문 앞 600자만 쓰므로 그만큼만 저장한다
-        val newsIn = ((thnPoll?.items ?: emptyList()) + (bcPoll?.items ?: emptyList()) + (dsPoll?.items ?: emptyList()))
+        val newsIn = ((thnPoll?.items ?: emptyList()) + (bcPoll?.items ?: emptyList()) + (dsPoll?.items ?: emptyList()) + (gnPoll?.items ?: emptyList()))
             .map { Linked(it.value.copy(text = it.value.text.takeCodePoints(600)), it.url) }
-        val news = merge(prev.news, newsIn.takeIf { thnPoll != null || bcPoll != null || dsPoll != null }, now) { a, url -> url.ifEmpty { "${a.source}|${a.title}" } }
+        val news = merge(prev.news, newsIn.takeIf { thnPoll != null || bcPoll != null || dsPoll != null || gnPoll != null }, now) { a, url -> url.ifEmpty { "${a.source}|${a.title}" } }
             .filter { it.value.publishedAt >= windowStart.atStartOfDay(ZoneOffset.UTC).toInstant() }
             .sortedWith(compareBy({ it.value.source }, { it.value.publishedAt }, { it.value.title }))
 
@@ -164,7 +165,8 @@ class Collector(
             kev.map { it.value },
             nvd.map { it.value },
             kisa.map { it.value },
-            news.map { it.value },
+            // GeekNews는 다른 매체 기사를 다시 소개하는 큐레이션이라 판정에 넣지 않는다(같은 기사를 두 번 세지 않게)
+            news.filter { it.value.source != GeekNewsAtomParser.SOURCE_CODE }.map { it.value },
             vendor.map { it.value },
         )
         val events = AlertEngine(ProductCatalog.names, alertStart, periodEnd).run(signals)
@@ -180,7 +182,8 @@ class Collector(
             .sortedWith(compareBy({ it.date }, { it.clusterKey }, { it.level }, { it.trigger }))
         val firstSeenOf = { e: AlertEvent -> notified.firstOrNull { it.sameAs(e) }?.firstSeen ?: now }
 
-        val details = DetailBuilder(kev, nvd, kisa, news, vendor)
+        // 위협·침해사고의 원문 기사에도 GeekNews는 넣지 않고, 뉴스 탭에만 싣는다
+        val details = DetailBuilder(kev, nvd, kisa, news.filter { it.value.source != GeekNewsAtomParser.SOURCE_CODE }, vendor, tabNews = news)
         // feed에 싣는 위협: 최근 [feedDays]일 안에 등급이 생기거나 오른 것, 그리고 등급은 그대로지만 최근 [feedDays]일 안에
         // 새 소식(기사·KISA·제조사 공지·KEV)이 이어지는 것. 이미 🔴인 사건이 계속 퍼지는 동안 목록에서 빠지지 않게 한다
         val feedFrom = today.minusDays(feedDays)
