@@ -10,6 +10,7 @@ import kestrel.rules.Level
 import kestrel.rules.NewsTopics
 import kestrel.rules.NvdCve
 import kestrel.rules.ProductCatalog
+import kestrel.rules.ProductNames
 import kestrel.rules.Signal
 import kestrel.rules.SignalKind
 import kestrel.rules.SignalExtractor
@@ -167,6 +168,25 @@ class DetailBuilder(
         const val MAX_INCIDENTS = 30
         /** 뉴스 탭에 싣는 최대 건수(최신순). 한 건 약 300바이트 */
         const val MAX_NEWS = 200
+        /** 한 매체가 뉴스 탭을 채우지 않게(11월 첫 주: 데일리시큐 118/200건) */
+        const val MAX_NEWS_PER_SOURCE = 70
+        private val NEWS_ORDER = compareByDescending<NewsItem> { it.at }.thenBy { it.title }
+
+        /**
+         * 뉴스 [max]건 고르기(최신순 입력): 매체마다 [perSource]건까지, 주제 "기타"는 주요가 아니면 뒤로 미룬 뒤,
+         * 자리가 남으면 미룬 기사로 채운다. 결과는 다시 최신순.
+         */
+        fun capNews(items: List<NewsItem>, max: Int, perSource: Int): List<NewsItem> {
+            val count = HashMap<String, Int>()
+            val first = ArrayList<NewsItem>()
+            val later = ArrayList<NewsItem>()
+            for (n in items) {
+                val c = count[n.source] ?: 0
+                if (c < perSource && (n.major || n.topic != NewsTopics.Topic.OTHER.id)) { first += n; count[n.source] = c + 1 } else later += n
+            }
+            val picked = first.take(max)
+            return (picked + later.take(max - picked.size)).sortedWith(NEWS_ORDER)
+        }
 
         /** 같은 이야기를 묶을 때 빼는 흔한 낱말(이것만 겹치면 같은 이야기로 보지 않는다) */
         val STORY_STOP = setOf(
@@ -279,9 +299,9 @@ class DetailBuilder(
 
     private fun productOf(key: String): String = when {
         key in ProductCatalog.names -> display(key)
-        CVE.matches(key) -> kev.firstOrNull { it.value.cveId == key }?.value?.let { "${it.vendorProject} ${it.product}" }
-            // KEV에 없으면 NVD 영향 범위의 제품 이름(짧게). 그것도 없으면 CVE 번호
-            ?: nvd.firstOrNull { it.value.id == key }?.value?.affected?.firstOrNull()?.product?.let(::shortProduct)?.ifEmpty { null }
+        // KEV 이름(제조사·제품이 겹치면 한 번만), 없으면 NVD 영향 범위의 제조사·제품(WordPress 플러그인·테마는 그렇게 표시). 그것도 없으면 CVE 번호
+        CVE.matches(key) -> kev.firstOrNull { it.value.cveId == key }?.value?.let { ProductNames.kev(it.vendorProject, it.product) }
+            ?: nvd.firstOrNull { it.value.id == key }?.value?.let { ProductNames.nvd(it, ::shortProduct) }?.ifEmpty { null }
             ?: key
         else -> key
     }
@@ -472,7 +492,7 @@ class DetailBuilder(
             val major = topic != NewsTopics.Topic.INDUSTRY && topic != NewsTopics.Topic.AI_TREND && (UrgentText.isUrgent(a.value) || sameStory.isNotEmpty() ||
                 ai in setOf(NewsTopics.AiKind.SUPPLY, NewsTopics.AiKind.SERVICE, NewsTopics.AiKind.ATTACK))
             NewsItem(a.value.publishedAt, a.value.source, a.value.title.clip(200), a.url, topic.id, ai?.id.orEmpty(), major, 1 + sameStory.size)
-        }.sortedWith(compareByDescending<NewsItem> { it.at }.thenBy { it.title }).take(MAX_NEWS)
+        }.sortedWith(NEWS_ORDER).let { capNews(it, MAX_NEWS, MAX_NEWS_PER_SOURCE) }
     }
 
     /** 생활 보안 공지(S2c: 피싱·스미싱·사칭). */
