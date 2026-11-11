@@ -231,6 +231,9 @@ class DetailBuilder(
             return out.toString() + "…"
         }
 
+        /** 제품군 이름에 있으면 같은 것으로 보는 낱말(예: Google Chrome의 KEV 제품 "Chromium") */
+        private val SAME_AS = mapOf("chrome" to "chromium", "edge" to "chromium")
+
         private val PRODUCT_SPLIT = Regex("""\s+(and|&)\s+|\s*[,;/(]\s*""")
 
         /**
@@ -238,7 +241,9 @@ class DetailBuilder(
          * 40자가 넘으면 낱말 단위로 줄인다. 예: "Citrix NetScaler" + "NetScaler ADC" → "ADC"
          */
         fun productSuffix(base: String, key: String, product: String): String {
-            val have = base.lowercase().split(' ').toSet() + key.lowercase()
+            // KEV가 제품을 특정하지 않으면("Multiple Products") "여러 제품"
+            if (product.trim().equals("Multiple Products", ignoreCase = true)) return "여러 제품"
+            val have = base.lowercase().split(' ').toSet() + key.lowercase() + base.lowercase().split(' ').mapNotNull { SAME_AS[it] }
             val first = product.split(PRODUCT_SPLIT).first().trim()
             val words = first.split(Regex("\\s+")).filter { it.isNotBlank() && it.lowercase() !in have }
             val out = StringBuilder()
