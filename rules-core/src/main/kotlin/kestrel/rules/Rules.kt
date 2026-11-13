@@ -23,10 +23,11 @@ import kestrel.rules.SignalKind.S8
  * 국내 침해사고는 금융·통신·공공·대규모면 🔴(S7K_MAJOR), 그 밖은 🟠(S7K)다.
  * v6.3: 제조사 공지가 실제 악용을 밝히면(S8) 핵심 제품군은 🔴, 그 밖은 🟠다. KEV 등재를 기다리지 않는다.
  * v6.4: 공급망 침해 보도는 한 곳뿐이어도 🟠(S7S). 해외 기관 사고를 다룬 한국어 기사는 국내 침해사고(S7K)에서 뺀다.
+ * v6.7: 지난 사고의 처분·재판·조사 결과 기사(본문 앞부분의 결정·판결 단서)는 국내 침해사고(S7K)에서 뺀다.
  */
 object Rules {
     /** 규칙 판. 바뀌면 수집기는 첫 실행처럼 그동안의 이벤트를 알리지 않고 기록만 한다. */
-    const val VERSION = "v6.6.1"
+    const val VERSION = "v6.7"
     private enum class Need { CORE }
 
     private val RED: List<Set<Any>> = listOf(

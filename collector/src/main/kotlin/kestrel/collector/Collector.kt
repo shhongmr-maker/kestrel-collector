@@ -40,6 +40,33 @@ class Collector(
         const val MAX_FOLLOWUPS = 5
         /** 이 기간 안에 같은 위협을 알렸으면 새 알림을 상향·추가 확인·후속 보도로 보낸다([FeedEvent.relation]) */
         val RELATED_WINDOW: Duration = Duration.ofDays(7)
+        /** v6.7: 알린 침해사고를 기억하는 기간. 이 안에 같은 기관의 새 이벤트는 새 사고가 아니라 후속 보도로 보낸다 */
+        const val INCIDENT_MEMORY_DAYS = 90L
+        private const val INCIDENT_MEMORY_IDS = 5
+
+        /**
+         * 침해사고 기억([CollectorState.incidentMemory])에서 [e]보다 앞서 알린 같은 기관의 이벤트 id(가장 늦은 것).
+         * [RELATED_WINDOW]를 넘었지만 [INCIDENT_MEMORY_DAYS] 안이면 후속 보도로 잇는다. 자신과 같은 날 이후 기록은 뺀다
+         */
+        fun rememberedOf(e: AlertEvent, memory: Map<String, List<String>>): String? {
+            if (!e.clusterKey.startsWith("INC:")) return null
+            return memory[e.clusterKey].orEmpty().filter { id ->
+                val d = runCatching { java.time.LocalDate.parse(id.substringBefore('|')) }.getOrNull() ?: return@filter false
+                d.isBefore(e.date) && ChronoUnit.DAYS.between(d, e.date) <= INCIDENT_MEMORY_DAYS
+            }.maxOrNull()
+        }
+
+        /** 이번 실행까지 알린 침해사고를 기억에 더하고 [INCIDENT_MEMORY_DAYS]일 지난 것은 지운다 */
+        fun remember(memory: Map<String, List<String>>, notified: List<Notified>, today: java.time.LocalDate): Map<String, List<String>> {
+            val add = notified.filter { it.clusterKey.startsWith("INC:") }.groupBy({ it.clusterKey }, { idOf(it) })
+            return (memory.keys + add.keys).associateWith { k -> (memory[k].orEmpty() + add[k].orEmpty()).distinct() }
+                .mapValues { (_, ids) ->
+                    ids.filter { id -> runCatching { java.time.LocalDate.parse(id.substringBefore('|')) }.getOrNull()?.let { ChronoUnit.DAYS.between(it, today) <= INCIDENT_MEMORY_DAYS } == true }
+                        .sortedDescending().take(INCIDENT_MEMORY_IDS)
+                }
+                .filterValues { it.isNotEmpty() }
+                .toSortedMap()
+        }
         private val CVE = Regex("CVE-\\d{4}-\\d{4,}")
 
         /** 이벤트의 근거·클러스터 키·재알림 CVE에 나온 CVE(정렬, 중복 없음) */
@@ -191,8 +218,16 @@ class Collector(
         val active = lastSignal.filterValues { it >= feedFrom }.keys
         val feedRaw = events.filter { it.date >= feedFrom || it.clusterKey in active }
         /** 먼저 알린 같은 위협이 있으면 관계와 그 이벤트 id를 붙인다 */
+        // v6.7: 7일 안에 알린 같은 위협이 없어도, 90일 안에 알린 같은 기관의 침해사고면 후속 보도로 잇는다
         fun related(f: FeedEvent, e: AlertEvent, ev: List<Signal>, history: List<Notified>): FeedEvent =
-            priorOf(e, cvesOf(e, ev), f.firstSeen, history).let { p -> relationOf(e, p).let { r -> if (r.isEmpty()) f else f.copy(relation = r, ref = idOf(p!!)) } }
+            priorOf(e, cvesOf(e, ev), f.firstSeen, history).let { p ->
+                relationOf(e, p).let { r ->
+                    when {
+                        r.isNotEmpty() -> f.copy(relation = r, ref = idOf(p!!))
+                        else -> rememberedOf(e, prev.incidentMemory)?.let { id -> f.copy(relation = FeedEvent.UPDATE, ref = id) } ?: f
+                    }
+                }
+            }
         val feedEvents = feedRaw
             .map { e -> evidence(e, signals).let { ev -> related(FeedEvent.of(e, firstSeenOf(e), ev, details.titles(e, ev)), e, ev, notified) } }
             .sortedWith(compareByDescending<FeedEvent> { it.date }.thenByDescending { it.level }.thenBy { it.clusterKey })
@@ -212,6 +247,7 @@ class Collector(
             followups = (prev.followups + followups.associate { it.clusterKey to now })
                 .filterValues { Duration.between(it, now) <= Duration.ofDays(feedDays + 1) }.toSortedMap(),
             stats = prev.stats.afterRun(now, newAlerts + followups, statuses.values.count { it.lastAttemptAt == now && it.error != null }),
+            incidentMemory = remember(prev.incidentMemory, notified, today),
         )
         val clusterEvents = (feedRaw + newAlertsRaw(live, toPush)).groupBy { it.clusterKey }
         val clusters = RelatedClusters.link(

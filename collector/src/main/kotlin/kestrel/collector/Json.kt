@@ -81,6 +81,7 @@ object Json {
             }
             fo("bodyFailures") { for ((url, n) in st.bodyFailures.toSortedMap()) f(url, n) }
             fo("followups") { for ((key, at) in st.followups.toSortedMap()) f(key, at) }
+            fo("incidentMemory") { for ((k, ids) in st.incidentMemory.toSortedMap()) { key(k); arr { ids.forEach { v(it) } } } }
             fo("stats") {
                 f("lastRunAt", st.stats.lastRunAt)
                 fa("days") { for (d in st.stats.days) day(d) }
@@ -141,6 +142,7 @@ object Json {
             fa("incidents") {
                 for (i in feed.incidents) obj {
                     f("key", i.key); f("title", i.title); f("level", i.level); f("firstReported", i.firstReported)
+                    if (i.past.isNotEmpty()) f("past", i.past)
                     fa("articles") { i.articles.forEach { doc(it) } }
                 }
             }
@@ -264,6 +266,9 @@ object Json {
             } ?: emptyList(),
             bodyFailures = o.optJSONObject("bodyFailures")?.let { b -> b.keySet().sorted().associateWith { b.getInt(it) } } ?: emptyMap(),
             followups = o.optJSONObject("followups")?.let { b -> b.keySet().sorted().associateWith { Instant.parse(b.getString(it)) } } ?: emptyMap(),
+            incidentMemory = o.optJSONObject("incidentMemory")?.let { b ->
+                b.keySet().sorted().associateWith { k -> b.getJSONArray(k).let { a -> (0 until a.length()).map { a.getString(it) } } }
+            } ?: emptyMap(),
             stats = o.optJSONObject("stats")?.let { st ->
                 RunStats(st.instant("lastRunAt"), st.optJSONArray("days")?.objects()?.map { readDay(it) } ?: emptyList())
             } ?: RunStats(),

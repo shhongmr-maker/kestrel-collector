@@ -125,7 +125,8 @@ data class CveRange(val cve: String, val range: VersionRange)
 data class SourceDoc(val id: String, val kind: String, val title: String, val url: String, val date: Instant, val text: String)
 
 /** 침해사고 보도 묶음. 같은 고유명사를 공유하는 기사끼리 묶는다. [level]은 S7 판정이 났으면 "RED", 아니면 빈 문자열. */
-data class IncidentInfo(val key: String, val title: String, val level: String, val firstReported: Instant, val articles: List<SourceDoc>)
+/** [past]: v6.7 지난 사고의 처분·재판·조사 결과 기사뿐이면 그 종류("처분"·"재판"·"조사"). 앱이 "과거 사고 후속"으로 보인다 */
+data class IncidentInfo(val key: String, val title: String, val level: String, val firstReported: Instant, val articles: List<SourceDoc>, val past: String = "")
 
 /** 생활 보안 공지(KISA 피싱·스미싱·사칭 주의보). 판정 대상이 아니라 앱 설정에서 켠 경우만 보인다. */
 data class NoticeInfo(val date: LocalDate, val title: String, val url: String)
@@ -439,9 +440,13 @@ class DetailBuilder(
             val level = shared.mapNotNull { levels["INC:$it"] }.maxByOrNull { if (it == "RED") 1 else 0 }.orEmpty()
             info("INC:" + (shared.sorted().firstOrNull() ?: g.first().value.title.clip(30)), level, g)
         }
-        val koreanInfo = korean.mapNotNull { a -> Incidents.koreanIncident(a.value.title, a.value.text)?.let { it to a } }
+        // v6.7: 과거 사고 후속 기사(처분·재판·조사 결과)도 기관별로 싣되, 그것뿐이면 표시해 새 사고와 구분한다
+        val koreanInfo = korean.mapNotNull { a -> Incidents.koreanSubject(a.value.title, a.value.text)?.let { it to a } }
             .groupBy({ it.first }, { it.second })
-            .map { (entity, g) -> info("INC:$entity", levels["INC:$entity"].orEmpty(), g) }
+            .map { (entity, g) ->
+                val past = g.map { Incidents.pastKorean(it.value.title, it.value.text) }
+                info("INC:$entity", levels["INC:$entity"].orEmpty(), g).copy(past = if (past.all { it != null }) past.last()!! else "")
+            }
         return (foreignInfo + koreanInfo).sortedByDescending { it.firstReported }.take(MAX_INCIDENTS)
     }
 

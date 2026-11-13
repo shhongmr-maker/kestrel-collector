@@ -304,6 +304,17 @@ object Incidents {
         "^(\\[[^\\]]{1,10}\\]\\s*)*[‘“\"']?(美|日|中|英|獨|佛|濠|브라질|미국|일본|중국|대만|홍콩|영국|프랑스|독일|호주|인도|베트남|러시아|이란|캐나다|싱가포르|네덜란드|유럽|태국|필리핀|인도네시아|말레이시아|멕시코|스페인|이탈리아|스웨덴|이스라엘|우크라이나|튀르키예|터키|사우디|덴마크|노르웨이|핀란드|폴란드|벨기에|스위스|오스트리아|아일랜드|포르투갈|그리스|체코|헝가리|루마니아|뉴질랜드|아르헨티나|칠레|콜롬비아|페루|남아공|나이지리아|이집트|파키스탄|몽골|카자흐스탄|글로벌|해외)",
     )
     private val NOT_FACT_KO = Regex("단정|연관성 (확인 안|없)|사실무근|해킹 (아냐|아니)")
+    /**
+     * v6.7: 지난 사고의 처분·재판·조사 결과를 다룬 기사. 제목은 새 사고처럼 보여도("삼양그룹 4개사 해킹으로 개인정보 15만명 유출",
+     * 실제로는 2022년 7월 사고에 대한 2026-11-11 개인정보위 과징금 의결) 본문 앞부분에 결정·판결 단서가 있다.
+     * 새 사고(S7K)로 알리지 않고 침해사고 목록에 "과거 사고 후속"으로만 싣는다. 결정 동사까지 있어야 한다
+     * (새 사고 기사의 "개인정보위에 신고했다"·"제재가 예상된다"는 걸리지 않게)
+     */
+    private val PAST_KO = Regex(
+        "(?<penalty>전체회의를 열고|(과징금|과태료)[^.]{0,40}(부과|의결)|의결했다|처분을 내렸|시정명령을)|" +
+            "(?<court>판결을|선고했|항소심|재판부)|" +
+            "(?<probe>직권조사|조사 결과를 (발표|공개))",
+    )
     // v6.4: 해외 기관 사고를 다룬 한국어 기사(제목에 나라 이름이 없는 경우). 제목·본문 앞부분의 해외 단서가 국내 단서보다 많으면 해외로 본다
     // v6.5: 나라 이름 뒤에 법인·증시·보안업체 등이 오면 피해 기관이 아니라 출처·상장지라 세지 않는다(쿠팡 美 SEC 공시, 미국 법인)
     private val FOREIGN_CUE_KO = Regex(
@@ -434,8 +445,21 @@ object Incidents {
         return if (w.codePointCount(0, w.length) >= 2) w else ""
     }
 
-    /** 국내 침해사고 기사면 기관 이름, 아니면 null. [text]는 본문 앞부분(해외 기관 사고를 거르는 데 쓴다, v6.4) */
-    fun koreanIncident(title: String, text: String = ""): String? {
+    /** v6.7: 지난 사고의 처분·재판·조사 결과 기사면 그 종류("처분"·"재판"·"조사"), 아니면 null. 제목과 본문 앞 600자를 본다 */
+    fun pastKorean(title: String, text: String = ""): String? {
+        val m = PAST_KO.find(title + " " + text.takeCodePoints(600)) ?: return null
+        return when {
+            m.groups["penalty"] != null -> "처분"
+            m.groups["court"] != null -> "재판"
+            else -> "조사"
+        }
+    }
+
+    /** 국내 침해사고 기사면 기관 이름, 아니면 null. [text]는 본문 앞부분(해외 기관 사고를 거르는 데 쓴다, v6.4). v6.7: 과거 사고 후속 기사는 뺀다 */
+    fun koreanIncident(title: String, text: String = ""): String? = koreanSubject(title, text)?.takeIf { pastKorean(title, text) == null }
+
+    /** 국내 기관이 당한 침해사고를 다룬 기사면 기관 이름(새 사고인지 과거 사고 후속인지는 보지 않는다) */
+    fun koreanSubject(title: String, text: String = ""): String? {
         if (!INC_KO.containsMatchIn(title) || !ACTUAL_KO.containsMatchIn(title) || NOT_INC_KO.containsMatchIn(title)) return null
         if (FOREIGN_KO.containsMatchIn(title) || NOT_FACT_KO.containsMatchIn(title) || foreignKorean(title, text)) return null
         val e = koreanEntity(title)

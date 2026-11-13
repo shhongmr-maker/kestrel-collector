@@ -52,4 +52,9 @@ data class CollectorState(
     val followups: Map<String, Instant> = emptyMap(),
     /** 운영 집계(일별 실행·알림·발송 수) */
     val stats: RunStats = RunStats(),
+    /**
+     * v6.7 침해사고 기억: 알린 침해사고 클러스터 → 알린 이벤트 id(최근 것부터 몇 개). [Collector.INCIDENT_MEMORY_DAYS]일 동안 둔다.
+     * [notified]는 판정 창(30일)만 남아, 그보다 오래 전에 알린 사고의 후속 기사를 새 사고로 다시 알리던 것을 막는다
+     */
+    val incidentMemory: Map<String, List<String>> = emptyMap(),
 )
